@@ -18,7 +18,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+@app.options("/shorten")
+async def shorten_options():
+    return {}
 DATABASE_URL = "sqlite:///./links.db"
 
 engine = create_engine(
