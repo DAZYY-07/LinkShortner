@@ -10,6 +10,16 @@ import string
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://linkshortner-p1s4.onrender.com",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # --------------------------------------------------
 # CONFIGURATION
 # --------------------------------------------------
