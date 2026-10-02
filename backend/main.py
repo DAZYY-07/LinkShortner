@@ -14,26 +14,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://linkshortner-p1s4.onrender.com",
+        "http://localhost:5173",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
-
-# --------------------------------------------------
-# CONFIGURATION
-# --------------------------------------------------
-
-# Frontend URL
-FRONTEND_URL = os.getenv(
-    "FRONTEND_URL",
-    "http://localhost:5173"
-)
-
-# Backend URL
-BACKEND_URL = os.getenv(
-    "BACKEND_URL",
-    "http://localhost:8000"
 )
 
 # --------------------------------------------------
