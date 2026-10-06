@@ -26,7 +26,7 @@ function App() {
     setCopied(false);
 
     try {
-      const response = await fetch("https://linkshortner-zsel.onrender.com/shorten", {
+      const response = await fetch("https://linkshortner-backend-uwgj.onrender.com/shorten", {
     method: "POST",
     headers: {
         "Content-Type": "application/json",

@@ -1,8 +1,8 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.orm import declarative_base, sessionmaker
 import secrets
@@ -14,6 +14,10 @@ DEFAULT_FRONTEND_URL = "https://linkshortner-p1s4.onrender.com"
 FRONTEND_URL = (
     os.getenv("FRONTEND_URL") or DEFAULT_FRONTEND_URL
 ).strip().rstrip("/")
+BACKEND_URL = os.getenv(
+    "BACKEND_URL",
+    "https://linkshortner-backend-uwgj.onrender.com",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -67,7 +71,7 @@ Base.metadata.create_all(bind=engine)
 # --------------------------------------------------
 
 class URLRequest(BaseModel):
-    url: str
+    url: HttpUrl
 
 # --------------------------------------------------
 # SHORT CODE GENERATOR
@@ -113,7 +117,7 @@ def shorten_url(data: URLRequest):
 
         # Save link
         link = Link(
-            original_url=data.url,
+            original_url=str(data.url),
             short_code=short_code
         )
 
@@ -125,7 +129,7 @@ def shorten_url(data: URLRequest):
         short_url = f"{BACKEND_URL}/{short_code}"
 
         return {
-            "original_url": data.url,
+            "original_url": str(data.url),
             "short_url": short_url,
             "short_code": short_code
         }
@@ -149,9 +153,7 @@ def redirect_to_original(short_code: str):
         ).first()
 
         if not link:
-            return {
-                "error": "Short URL not found."
-            }
+            raise HTTPException(status_code=404, detail="Short URL not found.")
 
         return RedirectResponse(
             url=link.original_url
