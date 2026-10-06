@@ -2,7 +2,8 @@ import { useState } from "react";
 
 function App() {
   const [url, setUrl] = useState("");
-  const [shortUrl, setShortUrl] = useState("");
+  const [shortUrl, setShortUrl] = useState("");      // real backend redirect URL
+  const [displayUrl, setDisplayUrl] = useState("");  // pretty URL: original-domain/code
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
@@ -44,6 +45,16 @@ function App() {
 
       if (data.short_url) {
         setShortUrl(data.short_url);
+
+        // Build a pretty display URL using the original link's domain
+        try {
+          const parsed = new URL(url.trim());
+          // e.g. "youtube.com" or "github.com"
+          const origin = parsed.origin; // includes protocol
+          setDisplayUrl(`${origin}/${data.short_code}`);
+        } catch {
+          setDisplayUrl(data.short_url);
+        }
       } else {
         setError("Something went wrong. No short URL received.");
       }
@@ -58,10 +69,11 @@ function App() {
   };
 
   const copyLink = async () => {
-    if (!shortUrl) return;
+    if (!displayUrl) return;
 
     try {
-      await navigator.clipboard.writeText(shortUrl);
+      // Copy the pretty display URL (original domain + short code)
+      await navigator.clipboard.writeText(displayUrl);
       setCopied(true);
 
       setTimeout(() => {
@@ -76,6 +88,7 @@ function App() {
   const clearAll = () => {
     setUrl("");
     setShortUrl("");
+    setDisplayUrl("");
     setError("");
     setCopied(false);
   };
@@ -158,14 +171,18 @@ function App() {
               </div>
 
               <div className="shortLinkRow">
-                {/* Clicking this directly opens the backend redirect */}
+                {/*
+                  Display: pretty URL using the original domain (e.g. youtube.com/AbC123)
+                  href: real backend redirect so the link actually works
+                */}
                 <a
                   href={shortUrl}
                   className="shortLink"
                   target="_blank"
                   rel="noopener noreferrer"
+                  title={`Redirects to: ${url}`}
                 >
-                  {shortUrl}
+                  {displayUrl}
                 </a>
 
                 <button className="copyButton" onClick={copyLink}>
@@ -183,7 +200,7 @@ function App() {
               </div>
 
               <p className="redirectInfo">
-                Clicking the short link will redirect to your original URL.
+                Short link uses your original domain • click to redirect
               </p>
             </div>
           )}
