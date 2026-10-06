@@ -10,35 +10,22 @@ import string
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://linkshortner-p1s4.onrender.com",
-        "http://localhost:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --------------------------------------------------
-# CORS
-# --------------------------------------------------
+DEFAULT_FRONTEND_URL = "https://linkshortner-p1s4.onrender.com"
+FRONTEND_URL = (
+    os.getenv("FRONTEND_URL") or DEFAULT_FRONTEND_URL
+).strip().rstrip("/")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
+        DEFAULT_FRONTEND_URL,
         FRONTEND_URL,
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-@app.options("/shorten")
-async def shorten_options():
-    return {}
 
 # --------------------------------------------------
 # DATABASE
