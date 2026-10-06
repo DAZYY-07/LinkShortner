@@ -10,7 +10,7 @@ import string
 
 app = FastAPI()
 
-DEFAULT_FRONTEND_URL = "https://linkshortner-p1s4.onrender.com"
+DEFAULT_FRONTEND_URL = "https://linkshortner-1-ex3g.onrender.com"
 FRONTEND_URL = (
     os.getenv("FRONTEND_URL") or DEFAULT_FRONTEND_URL
 ).strip().rstrip("/")
