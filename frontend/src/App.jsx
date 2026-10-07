@@ -34,6 +34,36 @@ function campaignUrlFor(value, campaign) {
 function qrUrl(text) {
   return `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(text)}&bgcolor=050916&color=60d0ff&margin=12`;
 }
+function setHeroTextHover(element, active) {
+  if (!active) {
+    if (document.documentElement.dataset.theme === "light") {
+      element.style.transform = "none";
+      element.style.filter = "none";
+      element.style.textShadow = "none";
+      return;
+    }
+    element.style.removeProperty("transform");
+    element.style.removeProperty("filter");
+    element.style.removeProperty("text-shadow");
+    return;
+  }
+
+  const lightTheme = document.documentElement.dataset.theme === "light";
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (lightTheme) {
+    element.style.transform = reducedMotion
+      ? "none"
+      : "perspective(700px) rotateX(0deg) translateY(-3px) scale(1.015)";
+    element.style.filter = "brightness(1.06)";
+    element.style.textShadow = "0 1px 0 #d5d8dd, 0 2px 0 #aeb4bd, 0 4px 0 #848c98, 0 7px 14px rgba(47,55,67,.2)";
+    return;
+  }
+  element.style.transform = reducedMotion
+    ? "perspective(700px) rotateX(3deg)"
+    : "perspective(700px) rotateX(0deg) translateY(-5px) scale(1.025)";
+  element.style.filter = "brightness(1.16)";
+  element.style.textShadow = "0 1px 0 #58a8e4, 0 2px 0 #347fbd, 0 4px 0 #205e99, 0 6px 0 rgba(16,44,78,.72), 0 13px 24px rgba(35,143,255,.42)";
+}
 function requestHeaders(token, json = false) {
   return {
     ...(json ? { "Content-Type": "application/json" } : {}),
@@ -260,22 +290,85 @@ function Bulk({ onNew, token }) {
 }
 
 /* ─── History ─────────────────────────────────────────────── */
-function History({ history, onClear, canClear }) {
+function History({ history, onClear, canClear, token }) {
   const [ci, setCi] = useState(null);
+  const [analyticsCode, setAnalyticsCode] = useState("");
+  const [analyticsByCode, setAnalyticsByCode] = useState({});
+  const [analyticsLoading, setAnalyticsLoading] = useState("");
+  const [analyticsErrors, setAnalyticsErrors] = useState({});
   const copy = async (u, i) => { await navigator.clipboard.writeText(u); setCi(i); setTimeout(() => setCi(null), 1600); };
+  const toggleAnalytics = async (shortCode) => {
+    if (analyticsCode === shortCode) {
+      setAnalyticsCode("");
+      return;
+    }
+    setAnalyticsCode(shortCode);
+    if (analyticsByCode[shortCode] || analyticsLoading === shortCode) return;
+
+    setAnalyticsLoading(shortCode);
+    setAnalyticsErrors(current => ({ ...current, [shortCode]: "" }));
+    try {
+      const response = await fetch(`${API}/my-links/${encodeURIComponent(shortCode)}/analytics`, {
+        headers: requestHeaders(token),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Unable to load link analytics.");
+      setAnalyticsByCode(current => ({ ...current, [shortCode]: data }));
+    } catch (error) {
+      setAnalyticsErrors(current => ({
+        ...current,
+        [shortCode]: error.message || "Unable to load link analytics.",
+      }));
+    } finally {
+      setAnalyticsLoading("");
+    }
+  };
+  const maxDailyClicks = (data) => Math.max(1, ...data.clicks_by_day.map(day => day.clicks));
   return (
     <section className="histSec" id="history">
       <div className="histHdr">
         <h2 className="histTitle">Recent Links</h2>
         {history.length > 0 && canClear && <button className="ghostBtn red" onClick={onClear}>Clear all</button>}
       </div>
+      {history.length > 0 && !token && <p className="analyticsMessage">Sign in to view click analytics for links in your account.</p>}
       {history.length === 0
         ? <p className="histEmpty">Your shortened links will appear here.</p>
         : history.map((h, i) => (
-          <div className="histRow" key={i}>
-            <div className="histLeft"><div className="histDomain">Redirects to {domainOf(h.original)}</div><div className="histTime">{fmtDate(h.ts)}</div></div>
-            <a href={h.short} className="histCode" target="_blank" rel="noopener noreferrer">{h.short}</a>
-            <button className={`btn btnSm ${ci === i ? "btnGreen" : "btnGhost"}`} onClick={() => copy(h.short, i)}>{ci === i ? "✓" : "Copy"}</button>
+          <div className="histEntry" key={h.code || h.short || i}>
+            <div className="histRow">
+              <div className="histLeft"><div className="histDomain">Redirects to {domainOf(h.original)}</div><div className="histTime">{fmtDate(h.ts)}</div></div>
+              <a href={h.short} className="histCode" target="_blank" rel="noopener noreferrer">{h.short}</a>
+              {token && <button className="btn btnSm btnGhost" onClick={() => toggleAnalytics(h.code)} aria-expanded={analyticsCode === h.code}>
+                {analyticsLoading === h.code ? "Loading…" : analyticsCode === h.code ? "Hide stats" : "Analytics"}
+              </button>}
+              <button className={`btn btnSm ${ci === i ? "btnGreen" : "btnGhost"}`} onClick={() => copy(h.short, i)}>{ci === i ? "✓" : "Copy"}</button>
+            </div>
+            {analyticsCode === h.code && (
+              <div className="linkAnalytics" aria-label={`Click analytics for ${h.short}`}>
+                {analyticsErrors[h.code]
+                  ? <p className="analyticsMessage" role="alert">{analyticsErrors[h.code]}</p>
+                  : analyticsByCode[h.code] && (
+                    <>
+                      <div className="linkAnalyticsTop">
+                        <strong>{analyticsByCode[h.code].total_clicks.toLocaleString()} total clicks</strong>
+                        <span>Last 7 days</span>
+                      </div>
+                      <div className="linkTrafficChart" role="img" aria-label="Daily clicks over the last 7 days">
+                        {analyticsByCode[h.code].clicks_by_day.map(day => (
+                          <div className="linkTrafficDay" key={day.date} title={`${day.date}: ${day.clicks} clicks`}>
+                            <span className="linkTrafficCount">{day.clicks}</span>
+                            <div className="linkTrafficTrack">
+                              <span style={{ height: `${Math.max(5, (day.clicks / maxDailyClicks(analyticsByCode[h.code])) * 100)}%` }} />
+                            </div>
+                            <span className="linkTrafficLabel">{new Date(`${day.date}T00:00:00`).toLocaleDateString(undefined, { weekday: "short" })}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                {analyticsLoading === h.code && <p className="analyticsMessage" role="status">Loading click analytics…</p>}
+              </div>
+            )}
           </div>
         ))}
     </section>
@@ -509,6 +602,12 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
     localStorage.setItem("ls_theme", theme);
+    if (theme === "light") {
+      const headline = document.querySelector(".hero3dText");
+      headline?.style.removeProperty("transform");
+      headline?.style.removeProperty("filter");
+      headline?.style.removeProperty("text-shadow");
+    }
   }, [theme]);
   const addToHistory = useCallback((entry) => {
     setStatsVersion(version => version + 1);
@@ -806,6 +905,23 @@ export default function App() {
           letter-spacing: -3px; margin-bottom: 22px;
           color: #fff;
           animation: fadeUp .7s .08s ease both;
+        }
+        .hero3dText {
+          display: inline-block;
+          position: relative;
+          transform: perspective(700px) rotateX(3deg);
+          transform-origin: center bottom;
+          transition: transform .24s cubic-bezier(.2,.8,.2,1), filter .24s ease, text-shadow .24s ease;
+          background: linear-gradient(180deg, #ffffff 4%, #c5ebff 58%, #71c9ff 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+          text-shadow:
+            0 1px 0 #438bc3,
+            0 2px 0 #28649c,
+            0 3px 0 #194b7d,
+            0 5px 0 rgba(16,44,78,.7),
+            0 10px 18px rgba(0,0,0,.35);
         }
         .heroH1 .line2 {
           display: block;
@@ -1187,13 +1303,23 @@ export default function App() {
         .histHdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
         .histTitle { font-family: 'Syne',sans-serif; font-size: 20px; font-weight: 800; color: #a0c0e0; letter-spacing: -0.5px; }
         .histEmpty { padding: 18px 20px; border-radius: 13px; border: 1px solid rgba(40,100,220,0.09); background: rgba(6,12,36,0.45); color: #3a5878; font-size: 13px; }
-        .histRow { display: flex; align-items: center; gap: 10px; padding: 13px 18px; border-radius: 13px; background: rgba(6,12,36,0.65); border: 1px solid rgba(40,100,220,0.09); margin-bottom: 8px; transition: border-color .2s; }
+        .histEntry { margin-bottom: 8px; }
+        .histRow { display: flex; align-items: center; gap: 10px; padding: 13px 18px; border-radius: 13px; background: rgba(6,12,36,0.65); border: 1px solid rgba(40,100,220,0.09); transition: border-color .2s; }
         .histRow:hover { border-color: rgba(40,100,220,0.22); }
         .histLeft { flex: 1; min-width: 0; }
         .histDomain { font-size: 13.5px; font-weight: 600; color: #6090b8; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
         .histTime { font-size: 10.5px; color: #1e3050; margin-top: 2px; }
         .histCode { flex: 0 0 auto; font-size: 12.5px; color: #50d0ff; text-decoration: none; padding: 5px 12px; border-radius: 8px; background: rgba(0,0,0,0.25); font-weight: 600; transition: color .2s; }
         .histCode:hover { color: #fff; }
+        .linkAnalytics { margin-top: 7px; padding: 16px; border: 1px solid rgba(40,100,220,0.12); border-radius: 13px; background: rgba(6,12,36,0.55); }
+        .linkAnalyticsTop { display: flex; justify-content: space-between; align-items: center; gap: 10px; color: #b8d8f0; font-size: 12px; }
+        .linkAnalyticsTop span { color: #6d88a7; font-size: 10px; }
+        .linkTrafficChart { display: flex; align-items: stretch; gap: 8px; height: 112px; margin-top: 12px; }
+        .linkTrafficDay { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .linkTrafficCount { color: #70baff; font-size: 9px; font-weight: 700; }
+        .linkTrafficTrack { flex: 1; width: 100%; display: flex; align-items: end; justify-content: center; border-bottom: 1px solid rgba(75,112,170,.15); background: linear-gradient(180deg,transparent,rgba(32,63,112,.07)); }
+        .linkTrafficTrack span { width: min(22px,70%); min-height: 3px; border-radius: 6px 6px 2px 2px; background: linear-gradient(180deg,#62dfff,#4c84ff 60%,#754be4); }
+        .linkTrafficLabel { color: #6d88a7; font-size: 9px; }
 
         /* ═══════════════════════════════════════════════
            FOOTER
@@ -1376,6 +1502,15 @@ export default function App() {
         }
         .navTheme:hover { background: rgba(40,90,170,.35); border-color: rgba(80,150,255,.55); }
         html[data-theme="light"] .heroH1 { color: #172844; }
+        html[data-theme="light"] .hero3dText {
+          background: none;
+          -webkit-text-fill-color: #172844;
+          background-clip: border-box;
+          transform: none;
+          filter: none;
+          text-shadow: none;
+          transition: transform .24s cubic-bezier(.2,.8,.2,1), filter .24s ease, text-shadow .24s ease;
+        }
         html[data-theme="light"] .heroSub { color: #52647d; }
         html[data-theme="light"] .chip { color: #526b8b; background: #fff; border-color: #e0e8f3; }
         html[data-theme="light"] .pill { color: #2861a1; background: #eaf3ff; border-color: #d3e5ff; }
@@ -1434,6 +1569,11 @@ export default function App() {
         html[data-theme="light"] .brShort,
         html[data-theme="light"] .histCode { color: #1474be; }
         html[data-theme="light"] .histCode { background: #edf3fb; }
+        html[data-theme="light"] .linkAnalytics { background: rgba(255,255,255,.9); border-color: #e0e8f2; }
+        html[data-theme="light"] .linkAnalyticsTop { color: #293e5d; }
+        html[data-theme="light"] .linkAnalyticsTop span,
+        html[data-theme="light"] .linkTrafficLabel { color: #71829b; }
+        html[data-theme="light"] .linkTrafficTrack { border-bottom-color: #e3eaf3; background: linear-gradient(180deg,transparent,#edf3fb); }
         html[data-theme="light"] .histTitle,
         html[data-theme="light"] .featName { color: #293e5d; }
         html[data-theme="light"] .histTime,
@@ -1502,7 +1642,11 @@ export default function App() {
                 AI-Powered · Free · Account optional
               </div>
               <h1 className="heroH1">
-                Short links.<br />
+                <span
+                  className="hero3dText"
+                  onMouseEnter={event => setHeroTextHover(event.currentTarget, true)}
+                  onMouseLeave={event => setHeroTextHover(event.currentTarget, false)}
+                >Short links.</span><br />
                 <span className="line2">Big possibilities.</span>
               </h1>
               <p className="heroSub">
@@ -1550,7 +1694,7 @@ export default function App() {
           {tab === "single" ? <Single onNew={addToHistory} token={token} /> : <Bulk onNew={addToHistory} token={token} />}
 
           {/* ── History ── */}
-          <History history={history} onClear={clearHistory} canClear={!user} />
+          <History key={token} history={history} onClear={clearHistory} canClear={!user} token={token} />
 
           {/* ── Features ── */}
           <section className="feats" id="features">

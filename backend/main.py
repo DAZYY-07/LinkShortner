@@ -549,6 +549,46 @@ def list_account_links(
         db.close()
 
 
+@app.get("/my-links/{short_code}/analytics")
+def get_link_analytics(
+    short_code: str,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+):
+    db = SessionLocal()
+    try:
+        user, _ = authenticate_token(db, credentials)
+        link = db.query(Link).filter(
+            Link.short_code == short_code,
+            Link.user_id == user.id,
+        ).first()
+        if not link:
+            raise HTTPException(status_code=404, detail="Link not found.")
+
+        today = datetime.now(timezone.utc).date()
+        first_day = today - timedelta(days=6)
+        first_event = datetime.combine(first_day, datetime.min.time())
+        events = db.query(ClickEvent.created_at).filter(
+            ClickEvent.link_id == link.id,
+            ClickEvent.created_at >= first_event,
+        ).all()
+        daily_clicks = {first_day + timedelta(days=offset): 0 for offset in range(7)}
+        for (created_at,) in events:
+            event_day = created_at.date()
+            if event_day in daily_clicks:
+                daily_clicks[event_day] += 1
+
+        return {
+            "short_code": link.short_code,
+            "total_clicks": link.clicks,
+            "clicks_by_day": [
+                {"date": day.isoformat(), "clicks": count}
+                for day, count in daily_clicks.items()
+            ],
+        }
+    finally:
+        db.close()
+
+
 @app.get("/stats")
 def get_public_stats(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
