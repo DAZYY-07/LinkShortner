@@ -123,6 +123,15 @@ class EmailVerification(Base):
     expires_at = Column(DateTime, nullable=False)
 
 
+class PasswordReset(Base):
+    __tablename__ = "password_resets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token_hash = Column(String, unique=True, index=True, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+
+
 class AuthToken(Base):
     __tablename__ = "auth_tokens"
 
@@ -172,6 +181,11 @@ class EmailRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
 
 
+class PasswordResetRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=8, max_length=128)
+
+
 def normalize_email(email: str) -> str:
     normalized = email.strip().lower()
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
@@ -189,6 +203,21 @@ def verification_token(db, user: User) -> str:
             user_id=user.id,
             token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
             expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=24),
+        )
+    )
+    return token
+
+
+def password_reset_token(db, user: User) -> str:
+    token = secrets.token_urlsafe(32)
+    db.query(PasswordReset).filter(
+        PasswordReset.user_id == user.id
+    ).delete(synchronize_session=False)
+    db.add(
+        PasswordReset(
+            user_id=user.id,
+            token_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1),
         )
     )
     return token
@@ -251,35 +280,21 @@ def send_with_smtp(host: str, sender: str, email: str, subject: str, text: str, 
             smtp.send_message(message)
 
 
-def send_verification_email(email: str, token: str) -> None:
+def send_email(email: str, subject: str, text: str, html: str, dev_link: str) -> None:
     script_url = os.getenv("GMAIL_SCRIPT_URL", "").strip()
     script_secret = os.getenv("GMAIL_SCRIPT_SECRET", "").strip()
     host = os.getenv("SMTP_HOST", "").strip()
     sender = (os.getenv("EMAIL_FROM") or os.getenv("SMTP_FROM", "")).strip()
-    verification_url = f"{BACKEND_URL}/auth/verify?{urlencode({'token': token})}"
     use_script = bool(script_url and script_secret)
 
     if not use_script and not (host and sender):
         print("\n" + "=" * 60)
-        print(" [DEV MODE] EMAIL VERIFICATION LINK:")
+        print(f" [DEV MODE] {subject}")
         print(f" To: {email}")
-        print(f" Verify URL: {verification_url}")
+        print(f" Link: {dev_link}")
         print("=" * 60 + "\n")
-        logger.info("Dev mode verification link: %s", verification_url)
+        logger.info("Dev mode email link for %s: %s", email, dev_link)
         return
-
-    subject = "Verify your LinkShortener email"
-    text = (
-        "Verify your LinkShortener account by opening this link within 24 hours:\n\n"
-        f"{verification_url}\n\n"
-        "If you did not request this account, you can ignore this email."
-    )
-    html = (
-        "<p>Verify your LinkShortener account by clicking the button below. "
-        "This link expires in 24 hours.</p>"
-        f'<p><a href="{verification_url}">Verify my email</a></p>'
-        "<p>If you did not request this account, you can ignore this email.</p>"
-    )
 
     provider = "Gmail script" if use_script else f"SMTP {host}"
     try:
@@ -290,6 +305,38 @@ def send_verification_email(email: str, token: str) -> None:
     except Exception as exc:
         logger.error("Failed sending email via %s for %s: %s", provider, email, exc)
         raise
+
+
+def send_verification_email(email: str, token: str) -> None:
+    verification_url = f"{BACKEND_URL}/auth/verify?{urlencode({'token': token})}"
+    send_email(
+        email,
+        "Verify your LinkShortener email",
+        "Verify your LinkShortener account by opening this link within 24 hours:\n\n"
+        f"{verification_url}\n\n"
+        "If you did not request this account, you can ignore this email.",
+        "<p>Verify your LinkShortener account by clicking the button below. "
+        "This link expires in 24 hours.</p>"
+        f'<p><a href="{verification_url}">Verify my email</a></p>'
+        "<p>If you did not request this account, you can ignore this email.</p>",
+        verification_url,
+    )
+
+
+def send_password_reset_email(email: str, token: str) -> None:
+    reset_url = f"{FRONTEND_URL}/?{urlencode({'reset': token})}"
+    send_email(
+        email,
+        "Reset your LinkShortener password",
+        "Reset your LinkShortener password by opening this link within 1 hour:\n\n"
+        f"{reset_url}\n\n"
+        "If you did not ask to reset your password, you can ignore this email.",
+        "<p>Reset your LinkShortener password by clicking the button below. "
+        "This link expires in 1 hour.</p>"
+        f'<p><a href="{reset_url}">Choose a new password</a></p>'
+        "<p>If you did not ask to reset your password, you can ignore this email.</p>",
+        reset_url,
+    )
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
@@ -508,6 +555,64 @@ def verify_email(token: str):
         ).delete(synchronize_session=False)
         db.commit()
         return RedirectResponse(f"{FRONTEND_URL}/?verified=1")
+    finally:
+        db.close()
+
+
+@app.post("/auth/forgot-password")
+def forgot_password(data: EmailRequest):
+    email = normalize_email(data.email)
+    # Same answer whether or not the account exists, so this can't be used to probe emails.
+    generic_response = {
+        "message": "If an account exists for this email, a password reset link has been sent. It expires in 1 hour."
+    }
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            return generic_response
+
+        token = password_reset_token(db, user)
+        db.commit()
+        try:
+            send_password_reset_email(email, token)
+        except Exception as error:
+            logger.exception("Unable to send password reset email to %s", email)
+            raise HTTPException(
+                status_code=503,
+                detail="Unable to send the password reset email. Please try again later.",
+            ) from error
+        return generic_response
+    finally:
+        db.close()
+
+
+@app.post("/auth/reset-password")
+def reset_password(data: PasswordResetRequest):
+    token_hash = hashlib.sha256(data.token.encode("utf-8")).hexdigest()
+    db = SessionLocal()
+    try:
+        reset = db.query(PasswordReset).filter(PasswordReset.token_hash == token_hash).first()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        user = reset and db.query(User).filter(User.id == reset.user_id).first()
+        if not reset or reset.expires_at <= now or not user:
+            if reset:
+                db.delete(reset)
+                db.commit()
+            raise HTTPException(
+                status_code=400,
+                detail="This reset link is invalid or expired. Request a new one and try again.",
+            )
+
+        user.password_hash = hash_password(data.password)
+        # The link was opened from the inbox, which also proves the user owns the email.
+        user.is_verified = True
+        db.query(PasswordReset).filter(PasswordReset.user_id == user.id).delete(synchronize_session=False)
+        db.query(EmailVerification).filter(EmailVerification.user_id == user.id).delete(synchronize_session=False)
+        # Sign out every existing session in case the old password was compromised.
+        db.query(AuthToken).filter(AuthToken.user_id == user.id).delete(synchronize_session=False)
+        db.commit()
+        return {"message": "Your password has been changed. You can now sign in."}
     finally:
         db.close()
 

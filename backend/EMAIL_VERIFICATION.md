@@ -5,6 +5,10 @@ until the link is opened; verification links expire after 24 hours. Existing
 accounts are marked unverified during the database migration and must request a
 verification email before signing in again.
 
+The same email setup sends password reset links ("Forgot password?" on the
+sign-in form). Reset links open the frontend at `/?reset=<token>`, expire after
+1 hour, mark the email as verified, and sign the account out everywhere.
+
 Configure these environment variables on the backend before enabling signup.
 Emails go through the Gmail Apps Script when `GMAIL_SCRIPT_URL` and
 `GMAIL_SCRIPT_SECRET` are set, otherwise through SMTP. With neither configured,

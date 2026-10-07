@@ -472,30 +472,59 @@ function StatsPanel({ stats, error }) {
   );
 }
 
-function AuthDialog({ onClose, onAuthenticated, initialNotice, initialMode = "login" }) {
+const AUTH_COPY = {
+  login: { title: "Welcome back", intro: "Save your links and access them from any device. Email verification is required.", submit: "Sign in" },
+  register: { title: "Create your account", intro: "Save your links and access them from any device. Email verification is required.", submit: "Create account" },
+  verification: { title: "Verify your email", intro: "Check your inbox and click the verification link before signing in.", submit: "Resend verification link" },
+  forgot: { title: "Reset your password", intro: "Enter your account email and we'll send you a link to choose a new password.", submit: "Send reset link" },
+  reset: { title: "Choose a new password", intro: "Pick a new password for your account. You'll be signed out on other devices.", submit: "Save new password" },
+};
+
+function AuthDialog({ onClose, onAuthenticated, initialNotice, initialMode = "login", resetToken = "" }) {
   const [mode, setMode] = useState(initialMode);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState(initialNotice || "");
+  const needsEmail = mode !== "reset";
+  const needsPassword = mode === "login" || mode === "register" || mode === "reset";
+  const needsConfirm = mode === "register" || mode === "reset";
+
+  const switchMode = (nextMode) => {
+    setMode(nextMode);
+    setPassword("");
+    setConfirmPassword("");
+    setError("");
+    setNotice("");
+  };
 
   const submit = async (event) => {
     event.preventDefault();
     const normalizedEmail = email.trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    if (needsEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       setError("Enter a valid email address.");
+      return;
+    }
+    if (needsConfirm && password !== confirmPassword) {
+      setError("Passwords don't match. Type the same password in both fields.");
       return;
     }
     setBusy(true);
     setError("");
     try {
-      const endpoint = mode === "verification"
-        ? "resend-verification"
-        : mode === "login" ? "login" : "register";
-      const payload = mode === "verification"
-        ? { email: normalizedEmail }
-        : { email: normalizedEmail, password };
+      const endpoint = {
+        login: "login",
+        register: "register",
+        verification: "resend-verification",
+        forgot: "forgot-password",
+        reset: "reset-password",
+      }[mode];
+      const payload = mode === "reset"
+        ? { token: resetToken, password }
+        : needsPassword ? { email: normalizedEmail, password } : { email: normalizedEmail };
       const response = await fetch(`${API}/auth/${endpoint}`, {
         method: "POST",
         headers: requestHeaders(null, true),
@@ -507,24 +536,28 @@ function AuthDialog({ onClose, onAuthenticated, initialNotice, initialMode = "lo
           ? data.detail.map(item => item.msg).join(" ")
           : data.detail;
         if (response.status === 409 && mode === "register") {
-          setMode("verification");
+          switchMode("verification");
           setNotice("An account already exists for this email. Request a verification link, or sign in if it is already verified.");
           return;
         }
         if (response.status === 403) {
-          setMode("verification");
+          switchMode("verification");
           setNotice(message);
           return;
         }
-        throw new Error(message || "Unable to sign in.");
+        throw new Error(message || "Something went wrong. Please try again.");
       }
       if (mode === "register") {
-        setMode("verification");
-        setPassword("");
+        switchMode("verification");
         setNotice(data.message);
         return;
       }
-      if (mode === "verification") {
+      if (mode === "reset") {
+        switchMode("login");
+        setNotice(data.message);
+        return;
+      }
+      if (mode === "verification" || mode === "forgot") {
         setNotice(data.message);
         return;
       }
@@ -536,57 +569,82 @@ function AuthDialog({ onClose, onAuthenticated, initialNotice, initialMode = "lo
     }
   };
 
+  const copy = AUTH_COPY[mode];
+  const passwordInput = (id, label, value, setValue, autoComplete) => (
+    <>
+      <label htmlFor={id}>{label}</label>
+      <div className="authPasswordWrap">
+        <input
+          id={id}
+          type={showPassword ? "text" : "password"}
+          autoComplete={autoComplete}
+          required
+          minLength={8}
+          maxLength={128}
+          value={value}
+          onChange={event => { setValue(event.target.value); setError(""); }}
+          placeholder="At least 8 characters"
+        />
+        <button
+          type="button"
+          className="authEye"
+          onClick={() => setShowPassword(shown => !shown)}
+          aria-label={showPassword ? "Hide password" : "Show password"}
+          aria-pressed={showPassword}
+          title={showPassword ? "Hide password" : "Show password"}
+        >
+          {showPassword ? "🙈" : "👁"}
+        </button>
+      </div>
+    </>
+  );
+
   return (
     <div className="authBackdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="authDialog" role="dialog" aria-modal="true" aria-labelledby="auth-title">
         <button className="authClose" type="button" onClick={onClose} aria-label="Close sign in">×</button>
         <div className="authIcon">🔐</div>
         <p className="authEyebrow">LINKSHORTENER ACCOUNT</p>
-        <h2 id="auth-title">{mode === "login" ? "Welcome back" : mode === "verification" ? "Verify your email" : "Create your account"}</h2>
-        <p className="authIntro">
-          {mode === "verification"
-            ? "Check your inbox and click the verification link before signing in."
-            : "Save your links and access them from any device. Email verification is required."}
-        </p>
+        <h2 id="auth-title">{copy.title}</h2>
+        <p className="authIntro">{copy.intro}</p>
         <form className="authForm" onSubmit={submit}>
-          <label htmlFor="auth-email">Email address</label>
-          <input
-            id="auth-email"
-            type="email"
-            autoComplete="email"
-            required
-            maxLength={254}
-            value={email}
-            onChange={event => { setEmail(event.target.value); setError(""); setNotice(""); }}
-            onInvalid={event => event.currentTarget.setCustomValidity("Enter a valid email address.")}
-            onInput={event => event.currentTarget.setCustomValidity("")}
-            placeholder="you@example.com"
-          />
-          {mode !== "verification" && <>
-            <label htmlFor="auth-password">Password</label>
+          {needsEmail && <>
+            <label htmlFor="auth-email">Email address</label>
             <input
-              id="auth-password"
-              type="password"
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              id="auth-email"
+              type="email"
+              autoComplete="email"
               required
-              minLength={8}
-              maxLength={128}
-              value={password}
-              onChange={event => { setPassword(event.target.value); setError(""); }}
-              placeholder="At least 8 characters"
+              maxLength={254}
+              value={email}
+              onChange={event => { setEmail(event.target.value); setError(""); setNotice(""); }}
+              onInvalid={event => event.currentTarget.setCustomValidity("Enter a valid email address.")}
+              onInput={event => event.currentTarget.setCustomValidity("")}
+              placeholder="you@example.com"
             />
           </>}
+          {needsPassword && passwordInput(
+            "auth-password",
+            mode === "reset" ? "New password" : "Password",
+            password,
+            setPassword,
+            mode === "login" ? "current-password" : "new-password",
+          )}
+          {needsConfirm && passwordInput("auth-password-confirm", "Confirm password", confirmPassword, setConfirmPassword, "new-password")}
+          {mode === "login" && (
+            <button type="button" className="authForgot" onClick={() => switchMode("forgot")}>Forgot password?</button>
+          )}
           {notice && <div className="authNotice" role="status">{notice}</div>}
           {error && <div className="errBox" role="alert">{error}</div>}
           <button className="btn btnPrimary authSubmit" type="submit" disabled={busy}>
-            {busy ? <><span className="spin" /> Please wait…</> : mode === "login" ? "Sign in" : mode === "verification" ? "Resend verification link" : "Create account"}
+            {busy ? <><span className="spin" /> Please wait…</> : copy.submit}
           </button>
         </form>
         <p className="authSwitch">
-          {mode === "verification" ? "Already verified?" : mode === "login" ? "New to LinkShortener?" : "Already have an account?"}
+          {mode === "login" ? "New to LinkShortener?" : mode === "register" ? "Already have an account?" : mode === "verification" ? "Already verified?" : "Remembered your password?"}
           {" "}
-          <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); setNotice(""); }}>
-            {mode === "verification" || mode === "register" ? "Sign in" : "Create account"}
+          <button type="button" onClick={() => switchMode(mode === "login" ? "register" : "login")}>
+            {mode === "login" ? "Create account" : "Sign in"}
           </button>
         </p>
       </section>
@@ -607,8 +665,9 @@ export default function App() {
   const tokenRef = useRef(token);
   useEffect(() => { tokenRef.current = token; }, [token]);
   const [verifiedParam] = useState(() => new URLSearchParams(window.location.search).get("verified"));
-  const [authOpen, setAuthOpen] = useState(() => verifiedParam === "1" || verifiedParam === "0");
-  const [authMode, setAuthMode] = useState(() => verifiedParam === "0" ? "verification" : "login");
+  const [resetToken] = useState(() => new URLSearchParams(window.location.search).get("reset") || "");
+  const [authOpen, setAuthOpen] = useState(() => Boolean(resetToken) || verifiedParam === "1" || verifiedParam === "0");
+  const [authMode, setAuthMode] = useState(() => resetToken ? "reset" : verifiedParam === "0" ? "verification" : "login");
   const [authNotice, setAuthNotice] = useState(() => (
     verifiedParam === "1"
       ? "Email verified. You can now sign in."
@@ -654,8 +713,10 @@ export default function App() {
   }, [shortRedirectCode]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (!params.has("verified")) return;
+    // Drop one-time email-link parameters so a refresh doesn't reopen the dialog.
+    if (!params.has("verified") && !params.has("reset")) return;
     params.delete("verified");
+    params.delete("reset");
     const query = params.toString();
     window.history.replaceState(
       window.history.state,
@@ -1389,6 +1450,19 @@ export default function App() {
         }
         .authForm input:focus { border-color: rgba(70,150,255,.6); box-shadow: 0 0 0 3px rgba(40,110,255,.12); }
         .authForm input::placeholder { color: #3c5573; }
+        .authPasswordWrap { position: relative; }
+        .authForm .authPasswordWrap input { padding-right: 48px; }
+        .authEye {
+          position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+          width: 36px; height: 36px; border: 0; border-radius: 8px;
+          background: none; font-size: 16px; cursor: pointer; opacity: .7; transition: opacity .2s, background .2s;
+        }
+        .authEye:hover, .authEye:focus-visible { opacity: 1; background: rgba(80,150,255,.12); }
+        .authForgot {
+          align-self: flex-end; margin-top: 10px; border: 0; background: none;
+          color: #6bbaff; font: 600 12px 'Inter',sans-serif; cursor: pointer;
+        }
+        .authForgot:hover { color: #b9e2ff; }
         .authSubmit { width: 100%; margin-top: 22px; }
         .authSwitch { margin-top: 20px; text-align: center; color: #637f9f; font-size: 12px; }
         .authSwitch button { border: 0; background: none; color: #6bbaff; font: 700 12px 'Inter',sans-serif; cursor: pointer; }
@@ -1612,6 +1686,7 @@ export default function App() {
         html[data-theme="light"] .authSwitch,
         html[data-theme="light"] .authForm label { color: #657894; }
         html[data-theme="light"] .authClose { color: #657894; }
+        html[data-theme="light"] .authForgot { color: #2f6fd1; }
         html[data-theme="light"] ::-webkit-scrollbar-thumb { background: #bdcce0; }
         @media (max-width: 600px) {
           .navTheme { padding: 0 8px; font-size: 11px; }
@@ -1752,7 +1827,7 @@ export default function App() {
 
         </div>
       </div>
-      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onAuthenticated={handleAuthenticated} initialNotice={authNotice} initialMode={authMode} />}
+      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onAuthenticated={handleAuthenticated} initialNotice={authNotice} initialMode={authMode} resetToken={resetToken} />}
     </>
   );
 }
