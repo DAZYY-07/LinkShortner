@@ -1,0 +1,8 @@
+# Keep local secrets, the dev database and the virtualenv out of the image.
+.env
+.env.*
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.db

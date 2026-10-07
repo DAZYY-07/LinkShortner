@@ -1,0 +1,60 @@
+# Runs the whole app locally in three containers: Postgres, the FastAPI backend and the
+# React frontend. Start with `docker compose up --build`, then open http://localhost:3000.
+# Optional settings (ports, DB password, Gmail script) go in a .env file next to this one;
+# see .env.example.
+name: linksnip
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: linksnip-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-linksnip}
+      POSTGRES_USER: ${POSTGRES_USER:-linksnip}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-linksnip}
+    ports:
+      # Host port 5433 so it doesn't clash with a locally installed PostgreSQL on 5432.
+      - "${DB_PORT:-5433}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    container_name: linksnip-backend
+    environment:
+      # "db" is the database container's hostname on the Compose network.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-linksnip}:${POSTGRES_PASSWORD:-linksnip}@db:5432/${POSTGRES_DB:-linksnip}
+      BACKEND_URL: http://localhost:${BACKEND_PORT:-8001}
+      FRONTEND_URL: http://localhost:${FRONTEND_PORT:-3000}
+      # Leave these empty to print verification/reset links in `docker compose logs backend`.
+      GMAIL_SCRIPT_URL: ${GMAIL_SCRIPT_URL:-}
+      GMAIL_SCRIPT_SECRET: ${GMAIL_SCRIPT_SECRET:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+    ports:
+      - "${BACKEND_PORT:-8001}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # The browser calls the backend through its published host port.
+        VITE_API_URL: http://localhost:${BACKEND_PORT:-8001}
+    container_name: linksnip-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  db-data:
