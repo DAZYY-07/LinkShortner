@@ -194,38 +194,34 @@ def verification_token(db, user: User) -> str:
     return token
 
 
-BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
-
-
-def send_with_brevo(api_key: str, sender: str, email: str, subject: str, text: str, html: str) -> None:
-    # Brevo's HTTPS API works on hosts that block outbound SMTP (e.g. Render's free tier).
-    sender_name, sender_email = parseaddr(sender)
+def send_with_gmail_script(script_url: str, secret: str, sender: str, email: str, subject: str, text: str, html: str) -> None:
+    # Posts to the Google Apps Script in gmail_sender.gs, which sends from your own Gmail.
+    # It goes over HTTPS, so it works on hosts that block outbound SMTP (e.g. Render's free tier).
+    sender_name, _ = parseaddr(sender)
     payload = {
-        "sender": {"name": sender_name or "LinkShortener", "email": sender_email},
-        "to": [{"email": email}],
+        "secret": secret,
+        "to": email,
+        "name": sender_name or "LinkShortener",
         "subject": subject,
-        "textContent": text,
-        "htmlContent": html,
+        "text": text,
+        "html": html,
     }
     request = urllib.request.Request(
-        BREVO_API_URL,
+        script_url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "api-key": api_key,
-            "accept": "application/json",
-            "content-type": "application/json",
-        },
+        headers={"content-type": "application/json"},
         method="POST",
     )
+    # Apps Script answers with a redirect to the result, which urllib follows as a GET.
+    with urllib.request.urlopen(request, timeout=20) as response:
+        body = response.read().decode("utf-8")
     try:
-        with urllib.request.urlopen(request, timeout=12):
-            pass
-    except urllib.error.HTTPError as exc:
-        try:
-            detail = json.loads(exc.read().decode("utf-8")).get("message", "")
-        except ValueError:
-            detail = ""
-        raise RuntimeError(f"Brevo API error {exc.code}: {detail or exc.reason}") from exc
+        result = json.loads(body)
+    except ValueError:
+        raise RuntimeError("Gmail script returned an unexpected response; check its deployment access.") from None
+    # Apps Script cannot set HTTP status codes, so errors come back as {"ok": false}.
+    if not result.get("ok"):
+        raise RuntimeError(f"Gmail script error: {result.get('error', 'unknown error')}")
 
 
 def send_with_smtp(host: str, sender: str, email: str, subject: str, text: str, html: str) -> None:
@@ -256,12 +252,14 @@ def send_with_smtp(host: str, sender: str, email: str, subject: str, text: str, 
 
 
 def send_verification_email(email: str, token: str) -> None:
-    brevo_api_key = os.getenv("BREVO_API_KEY", "").strip()
+    script_url = os.getenv("GMAIL_SCRIPT_URL", "").strip()
+    script_secret = os.getenv("GMAIL_SCRIPT_SECRET", "").strip()
     host = os.getenv("SMTP_HOST", "").strip()
     sender = (os.getenv("EMAIL_FROM") or os.getenv("SMTP_FROM", "")).strip()
     verification_url = f"{BACKEND_URL}/auth/verify?{urlencode({'token': token})}"
+    use_script = bool(script_url and script_secret)
 
-    if not sender or not (brevo_api_key or host):
+    if not use_script and not (host and sender):
         print("\n" + "=" * 60)
         print(" [DEV MODE] EMAIL VERIFICATION LINK:")
         print(f" To: {email}")
@@ -283,10 +281,10 @@ def send_verification_email(email: str, token: str) -> None:
         "<p>If you did not request this account, you can ignore this email.</p>"
     )
 
-    provider = "Brevo" if brevo_api_key else f"SMTP {host}"
+    provider = "Gmail script" if use_script else f"SMTP {host}"
     try:
-        if brevo_api_key:
-            send_with_brevo(brevo_api_key, sender, email, subject, text, html)
+        if use_script:
+            send_with_gmail_script(script_url, script_secret, sender, email, subject, text, html)
         else:
             send_with_smtp(host, sender, email, subject, text, html)
     except Exception as exc:
