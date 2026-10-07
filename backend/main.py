@@ -183,16 +183,20 @@ def verification_token(db, user: User) -> str:
 def send_verification_email(email: str, token: str) -> None:
     host = os.getenv("SMTP_HOST", "").strip()
     sender = os.getenv("SMTP_FROM", "").strip()
+    verification_url = f"{BACKEND_URL}/auth/verify?{urlencode({'token': token})}"
+
     if not host or not sender:
-        raise HTTPException(
-            status_code=503,
-            detail="Email verification is not configured. Set SMTP_HOST and SMTP_FROM on the server.",
-        )
+        print("\n" + "=" * 60)
+        print(" [DEV MODE] EMAIL VERIFICATION LINK:")
+        print(f" To: {email}")
+        print(f" Verify URL: {verification_url}")
+        print("=" * 60 + "\n")
+        logger.info("Dev mode verification link: %s", verification_url)
+        return
 
     port = int(os.getenv("SMTP_PORT", "587"))
     username = os.getenv("SMTP_USERNAME", "").strip()
     password = os.getenv("SMTP_PASSWORD", "")
-    verification_url = f"{BACKEND_URL}/auth/verify?{urlencode({'token': token})}"
     message = EmailMessage()
     message["Subject"] = "Verify your LinkShortener email"
     message["From"] = sender
@@ -316,11 +320,6 @@ def home():
 @app.post("/auth/register")
 def register_account(data: AccountRequest):
     email = normalize_email(data.email)
-    if not os.getenv("SMTP_HOST", "").strip() or not os.getenv("SMTP_FROM", "").strip():
-        raise HTTPException(
-            status_code=503,
-            detail="Email verification is not configured. Set SMTP_HOST and SMTP_FROM on the server.",
-        )
     db = SessionLocal()
     try:
         if db.query(User).filter(User.email == email).first():

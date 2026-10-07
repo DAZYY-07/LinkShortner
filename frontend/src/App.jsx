@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
-const API = import.meta.env.VITE_API_URL || "https://linkshortner-backend-uwgj.onrender.com";
+const API = import.meta.env.VITE_API_URL !== undefined && import.meta.env.VITE_API_URL !== ""
+  ? import.meta.env.VITE_API_URL
+  : (import.meta.env.DEV ? "" : "https://linkshortner-backend-uwgj.onrender.com");
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 function getHistory() {
