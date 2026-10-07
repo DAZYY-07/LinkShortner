@@ -16,6 +16,21 @@ function fmtDate(ts) {
 function domainOf(u) {
   try { return new URL(u).hostname.replace("www.", ""); } catch { return u; }
 }
+function campaignUrlFor(value, campaign) {
+  const destination = new URL(value);
+  const parameters = [
+    ["utm_source", campaign.source],
+    ["utm_medium", campaign.medium],
+    ["utm_campaign", campaign.name],
+    ["utm_content", campaign.content],
+    ["utm_term", campaign.term],
+  ];
+  for (const [key, parameter] of parameters) {
+    const normalized = parameter.trim();
+    if (normalized) destination.searchParams.set(key, normalized);
+  }
+  return destination.toString();
+}
 function qrUrl(text) {
   return `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(text)}&bgcolor=050916&color=60d0ff&margin=12`;
 }
@@ -109,19 +124,25 @@ function Single({ onNew, token }) {
   const [url, setUrl] = useState(""); const [res, setRes] = useState(null);
   const [loading, setLoading] = useState(false); const [copied, setCopied] = useState(false);
   const [err, setErr] = useState(""); const [qr, setQr] = useState(false);
+  const [campaign, setCampaign] = useState({ source: "", medium: "", name: "", content: "", term: "" });
   const submit = async (e) => {
     e.preventDefault(); const t = url.trim();
     if (!t) { setErr("Please enter a URL."); return; }
     if (!/^https?:\/\//i.test(t)) { setErr("URL must start with http:// or https://"); return; }
     setLoading(true); setErr(""); setRes(null); setCopied(false); setQr(false);
     try {
-      const r = await fetch(`${API}/shorten`, { method: "POST", headers: requestHeaders(token, true), body: JSON.stringify({ url: t }) });
+      const destination = campaignUrlFor(t, campaign);
+      const r = await fetch(`${API}/shorten`, { method: "POST", headers: requestHeaders(token, true), body: JSON.stringify({ url: destination }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || "Failed");
-      const entry = { original: t, short: d.short_url, code: d.short_code, ts: Date.now() };
+      const entry = { original: destination, short: d.short_url, code: d.short_code, ts: Date.now() };
       setRes(entry); onNew(entry);
     } catch (e2) { setErr(e2.message); }
     finally { setLoading(false); }
+  };
+  const updateCampaign = (field) => (event) => {
+    const value = event.target.value;
+    setCampaign(current => ({ ...current, [field]: value }));
   };
   const copy = async () => { await navigator.clipboard.writeText(res.short); setCopied(true); setTimeout(() => setCopied(false), 2000); };
   return (
@@ -135,6 +156,17 @@ function Single({ onNew, token }) {
         <button type="submit" className="btn btnPrimary" disabled={loading} id="single-shorten-btn">
           {loading ? <><span className="spin" /> <span role="status">Shortening…</span></> : <><span>Shorten</span><span className="arr">↗</span></>}
         </button>
+        <details className="campaignPanel">
+          <summary>Campaign tracking <span>Optional UTM tags</span></summary>
+          <p className="campaignHelp">Add standard UTM parameters to measure visits from this campaign in your analytics tools.</p>
+          <div className="campaignFields">
+            <label>Source<input value={campaign.source} onChange={updateCampaign("source")} placeholder="newsletter" autoComplete="off" /></label>
+            <label>Medium<input value={campaign.medium} onChange={updateCampaign("medium")} placeholder="email" autoComplete="off" /></label>
+            <label>Campaign<input value={campaign.name} onChange={updateCampaign("name")} placeholder="summer-launch" autoComplete="off" /></label>
+            <label>Content<input value={campaign.content} onChange={updateCampaign("content")} placeholder="header-link" autoComplete="off" /></label>
+            <label>Term<input value={campaign.term} onChange={updateCampaign("term")} placeholder="optional keyword" autoComplete="off" /></label>
+          </div>
+        </details>
       </form>
       <p className="hint">Each account or guest network can shorten the same URL up to 5 times.</p>
       {err && <div className="errBox" role="alert">⚠ {err}</div>}
@@ -457,6 +489,7 @@ function AuthDialog({ onClose, onAuthenticated, initialNotice }) {
 /* ─── Main App ────────────────────────────────────────────── */
 export default function App() {
   const interactiveRef = useRef(null);
+  const [theme, setTheme] = useState(() => localStorage.getItem("ls_theme") === "light" ? "light" : "dark");
   const [shortRedirectCode] = useState(() => new URLSearchParams(window.location.search).get("r") || "");
   const [redirectError, setRedirectError] = useState("");
   const [tab, setTab] = useState("single");
@@ -472,6 +505,11 @@ export default function App() {
   const [stats, setStats] = useState(null);
   const [statsError, setStatsError] = useState("");
   const [statsVersion, setStatsVersion] = useState(0);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    localStorage.setItem("ls_theme", theme);
+  }, [theme]);
   const addToHistory = useCallback((entry) => {
     setStatsVersion(version => version + 1);
     setHistory(prev => { const n = [entry, ...prev.filter(h => h.short !== entry.short)]; saveHistory(n); return n; });
@@ -544,16 +582,21 @@ export default function App() {
       const bounds = surface.getBoundingClientRect();
       const x = (event.clientX - bounds.left) / bounds.width;
       const y = (event.clientY - bounds.top) / bounds.height;
-      const strength = surface.classList.contains("featCard") ? 7 : 4;
+      const isLight = document.documentElement.dataset.theme === "light";
+      const strength = (surface.classList.contains("featCard") ? 7 : 4) * (isLight ? 1.6 : 1);
       surface.style.setProperty("--tilt-x", `${(0.5 - y) * strength}deg`);
       surface.style.setProperty("--tilt-y", `${(x - 0.5) * strength}deg`);
       surface.style.setProperty("--pointer-x", `${x * 100}%`);
       surface.style.setProperty("--pointer-y", `${y * 100}%`);
-      surface.style.setProperty("--tilt-lift", surface.classList.contains("featCard") ? "-4px" : "-2px");
+      surface.style.setProperty("--tilt-lift", surface.classList.contains("featCard") ? (isLight ? "-6px" : "-4px") : (isLight ? "-4px" : "-2px"));
+      surface.classList.add("isTilted");
     };
     const onPointerOut = (event) => {
       const surface = event.target.closest(".tilt3d");
-      if (surface && !surface.contains(event.relatedTarget)) resetTilt(surface);
+      if (surface && !surface.contains(event.relatedTarget)) {
+        resetTilt(surface);
+        surface.classList.remove("isTilted");
+      }
     };
 
     root.addEventListener("pointermove", onPointerMove);
@@ -966,7 +1009,7 @@ export default function App() {
           border: 1px solid rgba(40,110,255,0.13);
           box-shadow: 0 24px 70px rgba(0,0,0,0.4), 0 0 0 1px rgba(40,110,255,0.05);
           backdrop-filter: blur(14px);
-          animation: fadeUp .9s .38s ease both;
+          animation: fadeOpacity .9s .38s ease both;
           position: relative; overflow: hidden;
         }
         .card::before {
@@ -995,6 +1038,16 @@ export default function App() {
         .inputIcon { font-size: 16px; opacity: .4; flex-shrink: 0; }
         .inputWrap input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #cde0ff; font-size: 15px; font-family: 'Inter',sans-serif; padding: 12px 0; }
         .inputWrap input::placeholder { color: #2e4a68; }
+        .campaignPanel { flex: 0 0 100%; min-width: 0; padding: 12px 14px; border: 1px solid rgba(60,140,255,0.13); border-radius: 12px; background: rgba(2,8,24,0.48); }
+        .campaignPanel summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #9ccaff; cursor: pointer; font-size: 13px; font-weight: 700; list-style-position: inside; }
+        .campaignPanel summary span { color: #3e6287; font-size: 10px; font-weight: 500; }
+        .campaignHelp { margin: 10px 0 12px; color: #6d88a7; font-size: 11.5px; line-height: 1.5; }
+        .campaignFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+        .campaignFields label { display: flex; min-width: 0; flex-direction: column; gap: 5px; color: #7898ba; font-size: 10.5px; font-weight: 600; }
+        .campaignFields label:last-child:nth-child(odd) { grid-column: 1 / -1; }
+        .campaignFields input { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid rgba(70,130,220,.18); border-radius: 8px; outline: none; background: rgba(255,255,255,.04); color: #d6e9ff; font: 13px 'Inter',sans-serif; }
+        .campaignFields input:focus { border-color: rgba(70,150,255,.55); box-shadow: 0 0 0 3px rgba(40,110,255,.1); }
+        .campaignFields input::placeholder { color: #3c5573; }
 
         /* Textarea */
         .taWrap textarea {
@@ -1197,6 +1250,7 @@ export default function App() {
            KEYFRAMES
         ═══════════════════════════════════════════════ */
         @keyframes fadeUp { from{opacity:0;transform:translateY(22px)} to{opacity:1;transform:none} }
+        @keyframes fadeOpacity { from{opacity:0} to{opacity:1} }
         @keyframes fadeRight { from{opacity:0;transform:translateX(32px)} to{opacity:1;transform:none} }
 
         /* ═══════════════════════════════════════════════
@@ -1265,6 +1319,7 @@ export default function App() {
           .heroH1 { font-size: clamp(34px, 10vw, 48px); overflow-wrap: anywhere; }
           .heroSub { font-size: 14px; }
           .inputWrap input, .taWrap textarea, .authForm input { font-size: 16px; }
+          .campaignFields input { font-size: 16px; }
           .btn, .navAuth, .rbX, .ghostBtn { touch-action: manipulation; }
           .btnSm, .btnGhost, .btnBlue { min-height: 44px; }
           .histRow { min-width: 0; flex-wrap: wrap; gap: 8px; padding: 12px; }
@@ -1282,12 +1337,129 @@ export default function App() {
           .nav { padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); }
           .wrap { padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); }
           .card { padding: 18px 12px; }
+          .campaignFields { grid-template-columns: minmax(0, 1fr); }
+          .campaignFields label:last-child:nth-child(odd) { grid-column: auto; }
           .resultBox { padding: 16px 12px; }
           .analyticsCard { padding: 15px 12px; }
           .histTitle { font-size: 18px; }
         }
         @media (hover: none) {
           .btnPrimary:hover:not(:disabled), .btnBlue:hover, .analyticsCard:hover { transform: none; }
+        }
+
+        html[data-theme="light"] body { background: #f4f7fc; color: #24344d; }
+        html[data-theme="light"] .bgRoot {
+          background:
+            radial-gradient(ellipse 80% 60% at 50% -10%, rgba(83,145,255,.12) 0%, transparent 60%),
+            radial-gradient(ellipse 50% 40% at 90% 80%, rgba(158,105,240,.08) 0%, transparent 55%),
+            #f4f7fc;
+        }
+        html[data-theme="light"] .bgMesh { opacity: .48; }
+        html[data-theme="light"] .orb { opacity: .48; }
+        html[data-theme="light"] .nav { background: rgba(255,255,255,.84); border-bottom-color: #e1e8f2; }
+        html[data-theme="light"] .navBrand { color: #172844; }
+        html[data-theme="light"] .navLinks a { color: #52647d; }
+        html[data-theme="light"] .navLinks a:hover { color: #172844; }
+        html[data-theme="light"] .navAuth { color: #345b91; background: #f4f8ff; border-color: #d7e3f4; }
+        html[data-theme="light"] .navAuth:hover { color: #174c9c; background: #eaf2ff; border-color: #a9c5ed; }
+        html[data-theme="light"] .navUser { color: #52647d; }
+        html[data-theme="light"] .navTheme {
+          min-height: 38px; padding: 0 11px; border: 1px solid #d7e3f4; border-radius: 9px;
+          color: #345b91; background: #f4f8ff; font: 600 12px 'Inter',sans-serif; cursor: pointer;
+          white-space: nowrap; transition: background .2s, border-color .2s;
+        }
+        html[data-theme="light"] .navTheme:hover { background: #eaf2ff; border-color: #a9c5ed; }
+        .navTheme {
+          min-height: 38px; padding: 0 11px; border: 1px solid rgba(80,150,255,.24); border-radius: 9px;
+          color: #9ccaff; background: rgba(20,50,100,.32); font: 600 12px 'Inter',sans-serif;
+          cursor: pointer; white-space: nowrap; transition: background .2s, border-color .2s;
+        }
+        .navTheme:hover { background: rgba(40,90,170,.35); border-color: rgba(80,150,255,.55); }
+        html[data-theme="light"] .heroH1 { color: #172844; }
+        html[data-theme="light"] .heroSub { color: #52647d; }
+        html[data-theme="light"] .chip { color: #526b8b; background: #fff; border-color: #e0e8f3; }
+        html[data-theme="light"] .pill { color: #2861a1; background: #eaf3ff; border-color: #d3e5ff; }
+        html[data-theme="light"] .statsStrip { background: rgba(255,255,255,.76); border-color: #e2e9f3; box-shadow: 0 14px 36px rgba(29,54,91,.08); }
+        html[data-theme="light"] .sStat { border-right-color: #e6edf5; }
+        html[data-theme="light"] .sLbl { color: #667995; }
+        html[data-theme="light"] .analyticsCard { background: linear-gradient(145deg,#fff,#f7faff); border-color: #e1e9f4; box-shadow: 0 10px 26px rgba(29,54,91,.07); }
+        html[data-theme="light"] .analyticsClicks { background: radial-gradient(ellipse at 95% 0%, rgba(35,120,250,.08), transparent 60%), linear-gradient(145deg,#fff,#f7faff); }
+        html[data-theme="light"] .analyticsTitle,
+        html[data-theme="light"] .sectTitle { color: #1d304b; }
+        html[data-theme="light"] .analyticsCardTop,
+        html[data-theme="light"] .analyticsMessage,
+        html[data-theme="light"] .trafficLabel,
+        html[data-theme="light"] .analyticsFoot,
+        html[data-theme="light"] .analyticsPeriod { color: #657894; }
+        html[data-theme="light"] .analyticsNumber { color: #263d5c; }
+        html[data-theme="light"] .trafficTrack { border-bottom-color: #e3eaf3; background: linear-gradient(180deg,transparent,#edf3fb); }
+        html[data-theme="light"] .tabs { background: rgba(255,255,255,.8); border-color: #e0e8f2; }
+        html[data-theme="light"] .tab { color: #657894; }
+        html[data-theme="light"] .tab:hover:not(.on) { color: #27466f; background: #edf3fb; }
+        html[data-theme="light"] .card { background: rgba(255,255,255,.94); border-color: #e0e8f2; box-shadow: 0 18px 48px rgba(29,54,91,.13); }
+        html[data-theme="light"] .tilt3d.isTilted { box-shadow: 0 28px 54px rgba(34,71,125,.22), 0 0 0 1px rgba(55,125,230,.16); }
+        html[data-theme="light"] .featCard.isTilted { box-shadow: 0 24px 48px rgba(34,71,125,.2), 0 0 0 1px rgba(55,125,230,.14); }
+        html[data-theme="light"] .hc { box-shadow: 0 28px 62px rgba(39,91,164,.34), 0 0 0 1px rgba(55,125,230,.22), 0 0 55px rgba(66,135,255,.2); }
+        html[data-theme="light"] .cardTag { color: #617693; background: #edf3fb; }
+        html[data-theme="light"] .inputWrap,
+        html[data-theme="light"] .campaignPanel,
+        html[data-theme="light"] .campaignFields input,
+        html[data-theme="light"] .taWrap textarea,
+        html[data-theme="light"] .authForm input { background: #f7f9fd; border-color: #dce5f1; color: #263d5c; }
+        html[data-theme="light"] .inputWrap input { color: #263d5c; }
+        html[data-theme="light"] .inputWrap input::placeholder,
+        html[data-theme="light"] .taWrap textarea::placeholder,
+        html[data-theme="light"] .campaignFields input::placeholder,
+        html[data-theme="light"] .authForm input::placeholder { color: #8a9ab0; }
+        html[data-theme="light"] .campaignPanel summary { color: #315b91; }
+        html[data-theme="light"] .campaignPanel summary span,
+        html[data-theme="light"] .campaignHelp,
+        html[data-theme="light"] .campaignFields label { color: #657894; }
+        html[data-theme="light"] .hint,
+        html[data-theme="light"] .taMeta,
+        html[data-theme="light"] .ghostBtn,
+        html[data-theme="light"] .bulkListHdr { color: #71829b; }
+        html[data-theme="light"] .btnGhost { background: #edf3fb; color: #345b91; border-color: #d9e4f2; }
+        html[data-theme="light"] .resultBox { background: #f5fbf8; border-color: #ccebd9; box-shadow: 0 12px 34px rgba(29,54,91,.08); }
+        html[data-theme="light"] .rbX { background: #e8eef6; color: #52647d; }
+        html[data-theme="light"] .rbX:hover { background: #dce6f2; color: #263d5c; }
+        html[data-theme="light"] .rbLink { background: #fff; border-color: #e0e8f2; }
+        html[data-theme="light"] .rbSrc { color: #657894; }
+        html[data-theme="light"] .qrBox { background: #fff; border-color: #e0e8f2; }
+        html[data-theme="light"] .bulkRow,
+        html[data-theme="light"] .histRow,
+        html[data-theme="light"] .histEmpty { background: rgba(255,255,255,.8); border-color: #e0e8f2; }
+        html[data-theme="light"] .brDomain,
+        html[data-theme="light"] .histDomain { color: #526b8b; }
+        html[data-theme="light"] .brShort,
+        html[data-theme="light"] .histCode { color: #1474be; }
+        html[data-theme="light"] .histCode { background: #edf3fb; }
+        html[data-theme="light"] .histTitle,
+        html[data-theme="light"] .featName { color: #293e5d; }
+        html[data-theme="light"] .histTime,
+        html[data-theme="light"] .sectTag,
+        html[data-theme="light"] .footerTxt,
+        html[data-theme="light"] .footerNav a,
+        html[data-theme="light"] .featDesc { color: #71829b; }
+        html[data-theme="light"] .featCard { background: rgba(255,255,255,.85); border-color: #e0e8f2; }
+        html[data-theme="light"] .footer { border-top-color: #e0e8f2; }
+        html[data-theme="light"] .authBackdrop { background: rgba(30,45,68,.38); }
+        html[data-theme="light"] .authDialog { background: #fff; border-color: #dfe7f1; box-shadow: 0 28px 90px rgba(29,54,91,.22); }
+        html[data-theme="light"] .authDialog h2 { color: #1d304b; }
+        html[data-theme="light"] .authIntro,
+        html[data-theme="light"] .authSwitch,
+        html[data-theme="light"] .authForm label { color: #657894; }
+        html[data-theme="light"] .authClose { color: #657894; }
+        html[data-theme="light"] ::-webkit-scrollbar-thumb { background: #bdcce0; }
+        @media (max-width: 600px) {
+          .navTheme { padding: 0 8px; font-size: 11px; }
+        }
+        @media (max-width: 400px) {
+          .navBrand { gap: 8px; font-size: 16px; }
+          .navLogo { width: 32px; height: 32px; font-size: 16px; }
+          .navLinks { gap: 6px; }
+          .navAuth { padding: 7px 9px; font-size: 12px; }
+          .navTheme { min-height: 36px; padding: 0 7px; font-size: 10px; }
         }
       `}</style>
 
@@ -1311,6 +1483,9 @@ export default function App() {
           {user
             ? <><span className="navUser" title={user.email}>{user.email}</span><button className="navAuth" onClick={signOut}>Sign out</button></>
             : <button className="navAuth" onClick={() => { setAuthNotice(""); setAuthOpen(true); }}>Sign in</button>}
+          <button className="navTheme" type="button" onClick={() => setTheme(current => current === "dark" ? "light" : "dark")} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-pressed={theme === "light"}>
+            {theme === "dark" ? "☀ Light" : "☾ Dark"}
+          </button>
           <a href="#single-url-input" className="navCta">Try Now ↗</a>
         </div>
       </nav>
