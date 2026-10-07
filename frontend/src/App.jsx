@@ -443,7 +443,7 @@ function AuthDialog({ onClose, onAuthenticated, initialNotice }) {
           </button>
         </form>
         <p className="authSwitch">
-          {mode === "verification" ? "Already verified?" : mode === "login" ? "New to LinkSnip?" : "Already have an account?"}
+          {mode === "verification" ? "Already verified?" : mode === "login" ? "New to LinkShortener?" : "Already have an account?"}
           {" "}
           <button type="button" onClick={() => { setMode(mode === "register" ? "login" : "register"); setError(""); setNotice(""); }}>
             {mode === "verification" || mode === "register" ? "Sign in" : "Create account"}
@@ -1263,7 +1263,7 @@ export default function App() {
       <nav className="nav">
         <a href="/" className="navBrand">
           <div className="navLogo">🔗</div>
-          LinkSnip
+          LinkShortener
         </a>
         <div className="navLinks">
           <a href="#features">Features</a>
@@ -1339,7 +1339,7 @@ export default function App() {
 
           {/* ── Features ── */}
           <section className="feats" id="features">
-            <div className="sectTag">Why LinkSnip?</div>
+            <div className="sectTag">Why LinkShortener?</div>
             <h2 className="sectTitle">Packed with everything you need</h2>
             <div className="featsGrid">
               {[
@@ -1361,7 +1361,7 @@ export default function App() {
 
           {/* ── Footer ── */}
           <footer className="footer">
-            <div className="footerTxt">Built with <span className="heart">♥</span> · LinkSnip-AI — Free URL Shortener</div>
+            <div className="footerTxt">Built with <span className="heart">♥</span> · LinkShortener — Free URL Shortener</div>
             <nav className="footerNav">
               <a href="#features">Features</a>
               <a href="#history">History</a>

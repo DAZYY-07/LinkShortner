@@ -194,16 +194,16 @@ def send_verification_email(email: str, token: str) -> None:
     password = os.getenv("SMTP_PASSWORD", "")
     verification_url = f"{BACKEND_URL}/auth/verify?{urlencode({'token': token})}"
     message = EmailMessage()
-    message["Subject"] = "Verify your LinkSnip email"
+    message["Subject"] = "Verify your LinkShortener email"
     message["From"] = sender
     message["To"] = email
     message.set_content(
-        "Verify your LinkSnip account by opening this link within 24 hours:\n\n"
+        "Verify your LinkShortener account by opening this link within 24 hours:\n\n"
         f"{verification_url}\n\n"
         "If you did not request this account, you can ignore this email."
     )
     message.add_alternative(
-        "<p>Verify your LinkSnip account by clicking the button below. "
+        "<p>Verify your LinkShortener account by clicking the button below. "
         "This link expires in 24 hours.</p>"
         f'<p><a href="{verification_url}">Verify my email</a></p>'
         "<p>If you did not request this account, you can ignore this email.</p>",
@@ -306,7 +306,7 @@ def generate_code(length=6):
 @app.get("/")
 def home():
     return {
-        "message": "LinkSnip-AI URL Shortener is running!"
+        "message": "LinkShortener is running!"
     }
 
 # --------------------------------------------------

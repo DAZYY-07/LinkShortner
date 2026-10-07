@@ -11,7 +11,7 @@ Configure these environment variables on the backend before enabling signup:
 - `SMTP_PORT`: SMTP port; use `587` for STARTTLS or `465` for SSL.
 - `SMTP_USERNAME` and `SMTP_PASSWORD`: SMTP credentials, when required by the
   provider. For Gmail, use an app password rather than the account password.
-- `SMTP_FROM`: verified sender address, such as `LinkSnip <no-reply@example.com>`.
+- `SMTP_FROM`: verified sender address, such as `LinkShortener <no-reply@example.com>`.
 - `BACKEND_URL`: public backend base URL. Verification links are sent to this
   host.
 - `FRONTEND_URL`: public frontend base URL. Users return here after verifying.
