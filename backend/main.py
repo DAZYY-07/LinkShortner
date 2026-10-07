@@ -675,7 +675,14 @@ def get_public_stats(
 ):
     db = SessionLocal()
     try:
-        user = authenticate_token(db, credentials)[0] if credentials else None
+        user = None
+        if credentials:
+            try:
+                user = authenticate_token(db, credentials)[0]
+            except HTTPException:
+                # Public stats still load with a stale or revoked token; the frontend
+                # clears that token when /auth/me rejects it.
+                pass
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         today = now.date()
         week_start = datetime.combine(today - timedelta(days=6), datetime.min.time())
