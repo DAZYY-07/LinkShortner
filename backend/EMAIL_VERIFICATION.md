@@ -16,6 +16,6 @@ Configure these environment variables on the backend before enabling signup:
   host.
 - `FRONTEND_URL`: public frontend base URL. Users return here after verifying.
 
-For local testing, set `BACKEND_URL=http://localhost:8000` and
+For local testing, set `BACKEND_URL=http://localhost:8088` and
 `FRONTEND_URL=http://localhost:5173`. Keep SMTP credentials in backend
 environment settings; do not commit real credentials to source control.

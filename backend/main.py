@@ -9,7 +9,7 @@ import re
 import smtplib
 import ssl
 from email.message import EmailMessage
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi import Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,6 +43,8 @@ app.add_middleware(
         DEFAULT_FRONTEND_URL,
         FRONTEND_URL,
     ],
+    # Vite falls back to 5174, 5175, ... when 5173 is busy.
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -292,14 +294,36 @@ def account_response(user: User, token: str) -> dict:
     }
 
 
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
 def short_url_for(request: Request, short_code: str) -> str:
-    host = request.url.hostname
-    if host in {"localhost", "127.0.0.1", "::1"}:
-        local_host = f"[{host}]" if ":" in host else host
-        base_url = f"{request.url.scheme}://{local_host}:5173"
+    if request.url.hostname in LOCAL_HOSTS:
+        # Point local links at the dev frontend: cross-origin calls carry an Origin
+        # header, and the Vite dev proxy sends X-Forwarded-Host.
+        origin = request.headers.get("origin", "").rstrip("/")
+        forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+        if urlparse(origin).hostname in LOCAL_HOSTS:
+            base_url = origin
+        elif urlparse(f"//{forwarded_host}").hostname in LOCAL_HOSTS:
+            base_url = f"http://{forwarded_host}"
+        else:
+            base_url = "http://localhost:5173"
     else:
         base_url = FRONTEND_URL
     return f"{base_url}/?{urlencode({'r': short_code})}"
+
+def client_ip(request: Request) -> str:
+    # Behind Render's proxy request.client is the proxy itself, which would put every
+    # guest in the same bucket. These headers are client-controllable, so they are only
+    # good enough for the soft per-guest limit, not for anything security-sensitive.
+    for header in ("cf-connecting-ip", "true-client-ip"):
+        if request.headers.get(header):
+            return request.headers[header].strip()
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 # --------------------------------------------------
 # SHORT CODE GENERATOR
@@ -419,18 +443,15 @@ def verify_email(token: str):
             EmailVerification.token_hash == token_hash
         ).first()
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        if not verification or verification.expires_at <= now:
+        user = verification and db.query(User).filter(User.id == verification.user_id).first()
+        if not verification or verification.expires_at <= now or not user:
             if verification:
                 db.delete(verification)
                 db.commit()
-            raise HTTPException(
-                status_code=400,
-                detail="This verification link is invalid or expired. Request a new one and try again.",
-            )
+            # This endpoint is opened from an email, so send the user back to the app
+            # instead of showing a raw JSON error.
+            return RedirectResponse(f"{FRONTEND_URL}/?verified=0")
 
-        user = db.query(User).filter(User.id == verification.user_id).first()
-        if not user:
-            raise HTTPException(status_code=400, detail="This verification link is no longer valid.")
         user.is_verified = True
         db.query(EmailVerification).filter(
             EmailVerification.user_id == user.id
@@ -482,7 +503,7 @@ def shorten_url(
 
         guest_key = None
         if user is None:
-            client_host = request.client.host if request.client else "unknown"
+            client_host = client_ip(request)
             guest_key = hashlib.sha256(client_host.encode("utf-8")).hexdigest()
 
         existing_links = db.query(Link).filter(

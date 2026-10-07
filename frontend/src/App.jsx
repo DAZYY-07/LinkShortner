@@ -66,6 +66,18 @@ function setHeroTextHover(element, active) {
   element.style.filter = "brightness(1.16)";
   element.style.textShadow = "0 1px 0 #58a8e4, 0 2px 0 #347fbd, 0 4px 0 #205e99, 0 6px 0 rgba(16,44,78,.72), 0 13px 24px rgba(35,143,255,.42)";
 }
+async function downloadQr(text) {
+  // The QR image is cross-origin, so the <a download> attribute is ignored; fetch it as a blob instead.
+  try {
+    const response = await fetch(qrUrl(text));
+    if (!response.ok) throw new Error("QR download failed");
+    const href = URL.createObjectURL(await response.blob());
+    Object.assign(document.createElement("a"), { href, download: "qr.png" }).click();
+    setTimeout(() => URL.revokeObjectURL(href), 1000);
+  } catch {
+    window.open(qrUrl(text), "_blank", "noopener");
+  }
+}
 function requestHeaders(token, json = false) {
   return {
     ...(json ? { "Content-Type": "application/json" } : {}),
@@ -212,7 +224,7 @@ function Single({ onNew, token }) {
             <button className={`btn btnSm ${qr ? "btnActive" : "btnGhost"}`} onClick={() => setQr(v => !v)} id="single-qr-btn">QR</button>
           </div>
           <p className="rbSrc">Redirects to {domainOf(res.original)}</p>
-          {qr && <div className="qrBox"><img src={qrUrl(res.short)} alt="QR Code" className="qrImg" /><a href={qrUrl(res.short)} download="qr.png" className="qrDl">⤓ Download QR</a></div>}
+          {qr && <div className="qrBox"><img src={qrUrl(res.short)} alt="QR Code" className="qrImg" /><a href={qrUrl(res.short)} download="qr.png" className="qrDl" onClick={event => { event.preventDefault(); downloadQr(res.short); }}>⤓ Download QR</a></div>}
         </div>
       )}
     </div>
@@ -460,8 +472,8 @@ function StatsPanel({ stats, error }) {
   );
 }
 
-function AuthDialog({ onClose, onAuthenticated, initialNotice }) {
-  const [mode, setMode] = useState("login");
+function AuthDialog({ onClose, onAuthenticated, initialNotice, initialMode = "login" }) {
+  const [mode, setMode] = useState(initialMode);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -594,11 +606,15 @@ export default function App() {
   const [user, setUser] = useState(null);
   const tokenRef = useRef(token);
   useEffect(() => { tokenRef.current = token; }, [token]);
-  const [authOpen, setAuthOpen] = useState(() => new URLSearchParams(window.location.search).get("verified") === "1");
+  const [verifiedParam] = useState(() => new URLSearchParams(window.location.search).get("verified"));
+  const [authOpen, setAuthOpen] = useState(() => verifiedParam === "1" || verifiedParam === "0");
+  const [authMode, setAuthMode] = useState(() => verifiedParam === "0" ? "verification" : "login");
   const [authNotice, setAuthNotice] = useState(() => (
-    new URLSearchParams(window.location.search).get("verified") === "1"
+    verifiedParam === "1"
       ? "Email verified. You can now sign in."
-      : ""
+      : verifiedParam === "0"
+        ? "This verification link is invalid or expired. Enter your email to get a new one."
+        : ""
   ));
   const [stats, setStats] = useState(null);
   const [statsError, setStatsError] = useState("");
@@ -638,7 +654,7 @@ export default function App() {
   }, [shortRedirectCode]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("verified") !== "1") return;
+    if (!params.has("verified")) return;
     params.delete("verified");
     const query = params.toString();
     window.history.replaceState(
@@ -1628,7 +1644,7 @@ export default function App() {
           <a href="#history">History</a>
           {user
             ? <><span className="navUser" title={user.email}>{user.email}</span><button className="navAuth" onClick={signOut}>Sign out</button></>
-            : <button className="navAuth" onClick={() => { setAuthNotice(""); setAuthOpen(true); }}>Sign in</button>}
+            : <button className="navAuth" onClick={() => { setAuthNotice(""); setAuthMode("login"); setAuthOpen(true); }}>Sign in</button>}
           <button className="navTheme" type="button" onClick={() => setTheme(current => current === "dark" ? "light" : "dark")} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-pressed={theme === "light"}>
             {theme === "dark" ? "☀ Light" : "☾ Dark"}
           </button>
@@ -1736,7 +1752,7 @@ export default function App() {
 
         </div>
       </div>
-      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onAuthenticated={handleAuthenticated} initialNotice={authNotice} />}
+      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onAuthenticated={handleAuthenticated} initialNotice={authNotice} initialMode={authMode} />}
     </>
   );
 }
