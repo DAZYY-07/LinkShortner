@@ -401,7 +401,7 @@ function AuthDialog({ onClose, onAuthenticated, initialNotice }) {
       <section className="authDialog" role="dialog" aria-modal="true" aria-labelledby="auth-title">
         <button className="authClose" type="button" onClick={onClose} aria-label="Close sign in">×</button>
         <div className="authIcon">🔐</div>
-        <p className="authEyebrow">LINKSNIP ACCOUNT</p>
+        <p className="authEyebrow">LINKSHORTENER ACCOUNT</p>
         <h2 id="auth-title">{mode === "login" ? "Welcome back" : mode === "verification" ? "Verify your email" : "Create your account"}</h2>
         <p className="authIntro">
           {mode === "verification"
@@ -1248,6 +1248,46 @@ export default function App() {
           .tilt3d { transform: none !important; transition: none !important; will-change: auto; }
           .analyticsCard,.trafficBar,.topLinkTrack span { transition: none !important; }
           .sparkline span { animation: none !important; }
+        }
+        @media (max-width: 640px) {
+          .nav {
+            gap: 8px;
+            height: calc(64px + env(safe-area-inset-top));
+            padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+          }
+          .navBrand { min-width: 0; gap: 7px; font-size: clamp(14px, 4.2vw, 18px); white-space: nowrap; }
+          .navLogo { width: 32px; height: 32px; flex: 0 0 32px; font-size: 16px; }
+          .navLinks { min-width: 0; gap: 8px; }
+          .navLinks > a:not(.navCta) { display: none; }
+          .navAuth { min-height: 44px; padding: 8px 10px; }
+          .navCta { min-height: 44px; padding: 8px 12px; }
+          .wrap { width: 100%; padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+          .heroH1 { font-size: clamp(34px, 10vw, 48px); overflow-wrap: anywhere; }
+          .heroSub { font-size: 14px; }
+          .inputWrap input, .taWrap textarea, .authForm input { font-size: 16px; }
+          .btn, .navAuth, .rbX, .ghostBtn { touch-action: manipulation; }
+          .btnSm, .btnGhost, .btnBlue { min-height: 44px; }
+          .histRow { min-width: 0; flex-wrap: wrap; gap: 8px; padding: 12px; }
+          .histLeft { flex: 1 1 calc(100% - 70px); min-width: 0; }
+          .histCode { flex: 1 1 100%; order: 3; min-width: 0; overflow-wrap: anywhere; white-space: normal; line-height: 1.5; }
+          .histRow > .btn { order: 2; }
+          .bulkRow { min-width: 0; }
+          .brShort { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+          .footerTxt { padding-left: 8px; padding-right: 8px; line-height: 1.6; overflow-wrap: anywhere; }
+          .authBackdrop { align-items: start; overflow-y: auto; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+          .authDialog { max-height: calc(100vh - 32px); max-height: calc(100dvh - max(32px, env(safe-area-inset-top) + env(safe-area-inset-bottom))); overflow-y: auto; overscroll-behavior: contain; }
+        }
+        @media (max-width: 400px) {
+          .navCta { display: none; }
+          .nav { padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); }
+          .wrap { padding-left: max(10px, env(safe-area-inset-left)); padding-right: max(10px, env(safe-area-inset-right)); }
+          .card { padding: 18px 12px; }
+          .resultBox { padding: 16px 12px; }
+          .analyticsCard { padding: 15px 12px; }
+          .histTitle { font-size: 18px; }
+        }
+        @media (hover: none) {
+          .btnPrimary:hover:not(:disabled), .btnBlue:hover, .analyticsCard:hover { transform: none; }
         }
       `}</style>
 
