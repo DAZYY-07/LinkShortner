@@ -4,11 +4,15 @@ from dotenv import load_dotenv
 load_dotenv()
 import hashlib
 import hmac
+import json
 import logging
 import re
 import smtplib
 import ssl
+import urllib.error
+import urllib.request
 from email.message import EmailMessage
+from email.utils import parseaddr
 from urllib.parse import urlencode, urlparse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi import Depends
@@ -62,6 +66,8 @@ if DATABASE_URL.startswith("postgres://"):
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    # Hosted Postgres drops idle connections; check them before reuse.
+    pool_pre_ping=True,
 )
 
 SessionLocal = sessionmaker(
@@ -143,7 +149,7 @@ with engine.begin() as connection:
     if "guest_key" not in link_columns:
         connection.exec_driver_sql("ALTER TABLE links ADD COLUMN guest_key VARCHAR")
     if "created_at" not in link_columns:
-        connection.exec_driver_sql("ALTER TABLE links ADD COLUMN created_at DATETIME")
+        connection.exec_driver_sql("ALTER TABLE links ADD COLUMN created_at TIMESTAMP")
     if "clicks" not in link_columns:
         connection.exec_driver_sql(
             "ALTER TABLE links ADD COLUMN clicks INTEGER NOT NULL DEFAULT 0"
@@ -188,12 +194,74 @@ def verification_token(db, user: User) -> str:
     return token
 
 
+BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
+
+
+def send_with_brevo(api_key: str, sender: str, email: str, subject: str, text: str, html: str) -> None:
+    # Brevo's HTTPS API works on hosts that block outbound SMTP (e.g. Render's free tier).
+    sender_name, sender_email = parseaddr(sender)
+    payload = {
+        "sender": {"name": sender_name or "LinkShortener", "email": sender_email},
+        "to": [{"email": email}],
+        "subject": subject,
+        "textContent": text,
+        "htmlContent": html,
+    }
+    request = urllib.request.Request(
+        BREVO_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "api-key": api_key,
+            "accept": "application/json",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=12):
+            pass
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8")).get("message", "")
+        except ValueError:
+            detail = ""
+        raise RuntimeError(f"Brevo API error {exc.code}: {detail or exc.reason}") from exc
+
+
+def send_with_smtp(host: str, sender: str, email: str, subject: str, text: str, html: str) -> None:
+    port = int(str(os.getenv("SMTP_PORT", "465")).strip())
+    username = os.getenv("SMTP_USERNAME", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = sender
+    message["To"] = email
+    message.set_content(text)
+    message.add_alternative(html, subtype="html")
+
+    context = ssl.create_default_context()
+    if port == 465:
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=12) as smtp:
+            if username and password:
+                smtp.login(username, password)
+            smtp.send_message(message)
+    else:
+        with smtplib.SMTP(host, port, timeout=12) as smtp:
+            smtp.ehlo()
+            smtp.starttls(context=context)
+            smtp.ehlo()
+            if username and password:
+                smtp.login(username, password)
+            smtp.send_message(message)
+
+
 def send_verification_email(email: str, token: str) -> None:
+    brevo_api_key = os.getenv("BREVO_API_KEY", "").strip()
     host = os.getenv("SMTP_HOST", "").strip()
-    sender = os.getenv("SMTP_FROM", "").strip()
+    sender = (os.getenv("EMAIL_FROM") or os.getenv("SMTP_FROM", "")).strip()
     verification_url = f"{BACKEND_URL}/auth/verify?{urlencode({'token': token})}"
 
-    if not host or not sender:
+    if not sender or not (brevo_api_key or host):
         print("\n" + "=" * 60)
         print(" [DEV MODE] EMAIL VERIFICATION LINK:")
         print(f" To: {email}")
@@ -202,43 +270,27 @@ def send_verification_email(email: str, token: str) -> None:
         logger.info("Dev mode verification link: %s", verification_url)
         return
 
-    port = int(str(os.getenv("SMTP_PORT", "465")).strip())
-    username = os.getenv("SMTP_USERNAME", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "")
-    message = EmailMessage()
-    message["Subject"] = "Verify your LinkShortener email"
-    message["From"] = sender
-    message["To"] = email
-    message.set_content(
+    subject = "Verify your LinkShortener email"
+    text = (
         "Verify your LinkShortener account by opening this link within 24 hours:\n\n"
         f"{verification_url}\n\n"
         "If you did not request this account, you can ignore this email."
     )
-    message.add_alternative(
+    html = (
         "<p>Verify your LinkShortener account by clicking the button below. "
         "This link expires in 24 hours.</p>"
         f'<p><a href="{verification_url}">Verify my email</a></p>'
-        "<p>If you did not request this account, you can ignore this email.</p>",
-        subtype="html",
+        "<p>If you did not request this account, you can ignore this email.</p>"
     )
 
-    context = ssl.create_default_context()
+    provider = "Brevo" if brevo_api_key else f"SMTP {host}"
     try:
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, context=context, timeout=12) as smtp:
-                if username and password:
-                    smtp.login(username, password)
-                smtp.send_message(message)
+        if brevo_api_key:
+            send_with_brevo(brevo_api_key, sender, email, subject, text, html)
         else:
-            with smtplib.SMTP(host, port, timeout=12) as smtp:
-                smtp.ehlo()
-                smtp.starttls(context=context)
-                smtp.ehlo()
-                if username and password:
-                    smtp.login(username, password)
-                smtp.send_message(message)
+            send_with_smtp(host, sender, email, subject, text, html)
     except Exception as exc:
-        logger.error("Failed sending email via %s:%s for %s: %s", host, port, email, exc)
+        logger.error("Failed sending email via %s for %s: %s", provider, email, exc)
         raise
 
 
@@ -423,7 +475,7 @@ def resend_verification(data: EmailRequest):
         db.commit()
         try:
             send_verification_email(email, token)
-        except (smtplib.SMTPException, OSError, ValueError) as error:
+        except Exception as error:
             logger.exception("Unable to resend email verification to %s", email)
             raise HTTPException(
                 status_code=503,
