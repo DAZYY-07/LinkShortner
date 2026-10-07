@@ -197,7 +197,7 @@ def send_verification_email(email: str, token: str) -> None:
         logger.info("Dev mode verification link: %s", verification_url)
         return
 
-    port = int(os.getenv("SMTP_PORT", "587"))
+    port = int(str(os.getenv("SMTP_PORT", "465")).strip())
     username = os.getenv("SMTP_USERNAME", "").strip()
     password = os.getenv("SMTP_PASSWORD", "")
     message = EmailMessage()
@@ -220,12 +220,12 @@ def send_verification_email(email: str, token: str) -> None:
     context = ssl.create_default_context()
     try:
         if port == 465:
-            with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as smtp:
+            with smtplib.SMTP_SSL(host, port, context=context, timeout=12) as smtp:
                 if username and password:
                     smtp.login(username, password)
                 smtp.send_message(message)
         else:
-            with smtplib.SMTP(host, port, timeout=15) as smtp:
+            with smtplib.SMTP(host, port, timeout=12) as smtp:
                 smtp.ehlo()
                 smtp.starttls(context=context)
                 smtp.ehlo()
@@ -346,8 +346,8 @@ def register_account(data: AccountRequest):
         db.commit()
         try:
             send_verification_email(email, token)
-        except (smtplib.SMTPException, OSError, ValueError) as error:
-            logger.exception("Unable to send email verification to %s", email)
+        except Exception as error:
+            logger.exception("Unable to send email verification to %s: %s", email, error)
             db.query(EmailVerification).filter(
                 EmailVerification.user_id == user.id
             ).delete(synchronize_session=False)
@@ -355,7 +355,7 @@ def register_account(data: AccountRequest):
             db.commit()
             raise HTTPException(
                 status_code=503,
-                detail="Unable to send the verification email. Please try again later.",
+                detail=f"Unable to send verification email: {str(error) or 'connection failed'}",
             ) from error
         return {"message": "Check your inbox for a verification link. It expires in 24 hours."}
     finally:
