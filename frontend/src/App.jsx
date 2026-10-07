@@ -1,822 +1,1377 @@
-import { useState } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
-function App() {
-  const [url, setUrl] = useState("");
-  const [shortUrl, setShortUrl] = useState("");      // real backend redirect URL
-  const [displayUrl, setDisplayUrl] = useState("");  // pretty URL: original-domain/code
-  const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState("");
+const API = import.meta.env.VITE_API_URL || "https://linkshortner-backend-uwgj.onrender.com";
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+/* ─── Helpers ─────────────────────────────────────────────── */
+function getHistory() {
+  try { return JSON.parse(localStorage.getItem("ls_history") || "[]"); }
+  catch { return []; }
+}
+function saveHistory(arr) {
+  localStorage.setItem("ls_history", JSON.stringify(arr.slice(0, 20)));
+}
+function fmtDate(ts) {
+  return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+function domainOf(u) {
+  try { return new URL(u).hostname.replace("www.", ""); } catch { return u; }
+}
+function qrUrl(text) {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(text)}&bgcolor=050916&color=60d0ff&margin=12`;
+}
+function requestHeaders(token, json = false) {
+  return {
+    ...(json ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
 
-    if (!url.trim()) {
-      setError("Please enter a URL.");
-      return;
+/* ─── Particle Canvas ─────────────────────────────────────── */
+function ParticleCanvas() {
+  const ref = useRef(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    let W, H, pts = [], raf;
+    const resize = () => { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; };
+    resize();
+    window.addEventListener("resize", resize);
+    for (let i = 0; i < 90; i++) {
+      pts.push({
+        x: Math.random() * W, y: Math.random() * H,
+        r: Math.random() * 1.4 + 0.3,
+        dx: (Math.random() - 0.5) * 0.28, dy: (Math.random() - 0.5) * 0.28,
+        a: Math.random() * 0.5 + 0.1,
+        hue: [210, 240, 270][Math.floor(Math.random() * 3)],
+      });
     }
-
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      setError("Please enter a valid URL starting with http:// or https://");
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-    setShortUrl("");
-    setCopied(false);
-
-    try {
-      const response = await fetch("https://linkshortner-backend-uwgj.onrender.com/shorten", {
-    method: "POST",
-    headers: {
-        "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-        url: url.trim(),
-    }),
-});
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.detail || "Unable to shorten URL.");
-      }
-
-      if (data.short_url) {
-        setShortUrl(data.short_url);
-
-        // Build a pretty display URL using the original link's domain
-        try {
-          const parsed = new URL(url.trim());
-          // e.g. "youtube.com" or "github.com"
-          const origin = parsed.origin; // includes protocol
-          setDisplayUrl(`${origin}/${data.short_code}`);
-        } catch {
-          setDisplayUrl(data.short_url);
+    const draw = () => {
+      ctx.clearRect(0, 0, W, H);
+      pts.forEach(p => {
+        p.x = (p.x + p.dx + W) % W; p.y = (p.y + p.dy + H) % H;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fillStyle = `hsla(${p.hue},100%,78%,${p.a})`; ctx.fill();
+      });
+      for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+        const dx = pts[i].x - pts[j].x, dy = pts[i].y - pts[j].y, d = Math.hypot(dx, dy);
+        if (d < 120) {
+          ctx.beginPath(); ctx.moveTo(pts[i].x, pts[i].y); ctx.lineTo(pts[j].x, pts[j].y);
+          ctx.strokeStyle = `rgba(80,180,255,${0.07 * (1 - d / 120)})`; ctx.lineWidth = 0.6; ctx.stroke();
         }
-      } else {
-        setError("Something went wrong. No short URL received.");
       }
-    } catch (err) {
-      console.error(err);
-      setError(
-        "Could not connect to the server. Make sure your FastAPI backend is running."
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
+  }, []);
+  return <canvas ref={ref} style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }} />;
+}
 
-  const copyLink = async () => {
-    if (!displayUrl) return;
-
-    try {
-      // Copy the pretty display URL (original domain + short code)
-      await navigator.clipboard.writeText(displayUrl);
-      setCopied(true);
-
-      setTimeout(() => {
-        setCopied(false);
-      }, 2000);
-    } catch (err) {
-      console.error(err);
-      setError("Could not copy the link.");
-    }
-  };
-
-  const clearAll = () => {
-    setUrl("");
-    setShortUrl("");
-    setDisplayUrl("");
-    setError("");
-    setCopied(false);
-  };
-
+/* ─── 3-D Hero Card ───────────────────────────────────────── */
+function HeroCard() {
+  const wrap = useRef(null);
+  const card = useRef(null);
+  const onMove = useCallback((e) => {
+    if (!card.current) return;
+    const r = card.current.getBoundingClientRect();
+    const rx = (-(e.clientY - r.top - r.height / 2) / (r.height / 2)) * 16;
+    const ry = ((e.clientX - r.left - r.width / 2) / (r.width / 2)) * 16;
+    card.current.style.transform = `perspective(900px) rotateX(${rx}deg) rotateY(${ry}deg) scale3d(1.05,1.05,1.05)`;
+  }, []);
+  const onLeave = useCallback(() => {
+    if (card.current) card.current.style.transform = "perspective(900px) rotateX(0) rotateY(0) scale3d(1,1,1)";
+  }, []);
   return (
-    <>
-      <div className="app">
-        {/* Background effects */}
-        <div className="glow glowOne"></div>
-        <div className="glow glowTwo"></div>
-
-        {/* Navbar */}
-        <nav className="navbar">
-          <div className="brand">
-            <div className="brandIcon">↗</div>
-            <span>LinkShortner</span>
+    <div ref={wrap} className="hcWrap" onMouseMove={onMove} onMouseLeave={onLeave}>
+      <div ref={card} className="hc">
+        <div className="hcSpin" />
+        <div className="hcBody">
+          <div className="hcEmoji">🔗</div>
+          <div className="hcBars">
+            <div className="hcBar" style={{ width: "75%" }} />
+            <div className="hcBar" style={{ width: "50%", animationDelay: ".25s" }} />
+            <div className="hcBar" style={{ width: "65%", animationDelay: ".5s" }} />
           </div>
-
-          <div className="navLinks">
-            <a href="#features">Features</a>
-            <a href="#about">About</a>
-          </div>
-        </nav>
-
-        {/* Main */}
-        <main className="main">
-          <div className="badge">
-            <span>✦</span>
-            Free • Fast • Simple • No Login
-          </div>
-
-          <h1>
-            Short links.
-            <br />
-            <span>Big possibilities.</span>
-          </h1>
-
-          <p className="subtitle">
-            Transform long URLs into short, clean and shareable links
-            instantly.
-            <br className="desktopBreak" />
-            No account required.
-          </p>
-
-          {/* URL Form */}
-          <form className="shortenerForm" onSubmit={handleSubmit}>
-            <input
-              type="url"
-              value={url}
-              onChange={(e) => {
-                setUrl(e.target.value);
-                setError("");
-              }}
-              placeholder="Paste your long URL here..."
-              aria-label="Long URL"
-            />
-
-            <button type="submit" disabled={loading}>
-              {loading ? "Shortening..." : "Shorten ↗"}
-            </button>
-          </form>
-
-          <div className="hint">Press Enter to shorten your link</div>
-
-          {/* Error */}
-          {error && <div className="errorBox">⚠ {error}</div>}
-
-          {/* Result */}
-          {shortUrl && (
-            <div className="resultBox">
-              <div className="resultHeader">
-                <div>
-                  <div className="resultLabel">YOUR SHORT LINK</div>
-                  <div className="successText">✓ Link created successfully</div>
-                </div>
-
-                <button className="clearButton" onClick={clearAll}>
-                  ×
-                </button>
-              </div>
-
-              <div className="shortLinkRow">
-                {/*
-                  Display: pretty URL using the original domain (e.g. youtube.com/AbC123)
-                  href: real backend redirect so the link actually works
-                */}
-                <a
-                  href={shortUrl}
-                  className="shortLink"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={`Redirects to: ${url}`}
-                >
-                  {displayUrl}
-                </a>
-
-                <button className="copyButton" onClick={copyLink}>
-                  {copied ? "✓ Copied" : "Copy"}
-                </button>
-
-                <a
-                  href={shortUrl}
-                  className="openButton"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Open ↗
-                </a>
-              </div>
-
-              <p className="redirectInfo">
-                Short link uses your original domain • click to redirect
-              </p>
-            </div>
-          )}
-
-          {/* Features */}
-          <section className="features" id="features">
-            <div className="feature">
-              <div className="featureIcon">⚡</div>
-              <div>
-                <h3>Instant</h3>
-                <p>Create short links in seconds</p>
-              </div>
-            </div>
-
-            <div className="feature">
-              <div className="featureIcon">🔒</div>
-              <div>
-                <h3>Simple</h3>
-                <p>No account or registration required</p>
-              </div>
-            </div>
-
-            <div className="feature">
-              <div className="featureIcon">↗</div>
-              <div>
-                <h3>Redirect</h3>
-                <p>Short links open the original URL</p>
-              </div>
-            </div>
-          </section>
-
-          {/* About */}
-          <section className="about" id="about">
-            <h2>LinkShortner</h2>
-            <p>
-              A free and simple URL shortening service designed to turn long
-              web addresses into clean, shareable links.
-            </p>
-          </section>
-        </main>
-
-        {/* Footer */}
-        <footer>
-          LinkShortner • Free URL Shortening Service
-        </footer>
+          <div className="hcTag">AI · POWERED</div>
+          <div className="hcArrow">↗</div>
+        </div>
+        <div className="hcBlob b1" />
+        <div className="hcBlob b2" />
+        <div className="hcGlare" />
       </div>
-
-      {/* All styling is included here */}
-      <style>{`
-        * {
-          box-sizing: border-box;
-          margin: 0;
-          padding: 0;
-        }
-
-        html {
-          scroll-behavior: smooth;
-        }
-
-        body {
-          margin: 0;
-          font-family: Inter, Arial, Helvetica, sans-serif;
-          background: #050816;
-          color: white;
-        }
-
-        button,
-        input {
-          font-family: inherit;
-        }
-
-        .app {
-          min-height: 100vh;
-          width: 100%;
-          overflow-x: hidden;
-          position: relative;
-          background:
-            radial-gradient(
-              circle at 50% 25%,
-              rgba(0, 140, 255, 0.24),
-              transparent 35%
-            ),
-            radial-gradient(
-              circle at 20% 80%,
-              rgba(95, 45, 255, 0.13),
-              transparent 30%
-            ),
-            linear-gradient(135deg, #050816 0%, #08142c 50%, #030611 100%);
-        }
-
-        .glow {
-          position: absolute;
-          border-radius: 50%;
-          filter: blur(90px);
-          pointer-events: none;
-          opacity: 0.35;
-        }
-
-        .glowOne {
-          width: 280px;
-          height: 280px;
-          background: #0077ff;
-          top: 120px;
-          left: 50%;
-          transform: translateX(-50%);
-        }
-
-        .glowTwo {
-          width: 220px;
-          height: 220px;
-          background: #7040ff;
-          bottom: 100px;
-          right: -80px;
-        }
-
-        .navbar {
-          width: 100%;
-          height: 70px;
-          padding: 0 6%;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          position: relative;
-          z-index: 5;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-          background: rgba(4, 9, 24, 0.65);
-          backdrop-filter: blur(12px);
-        }
-
-        .brand {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          font-weight: 800;
-          font-size: 18px;
-        }
-
-        .brandIcon {
-          width: 34px;
-          height: 34px;
-          border-radius: 10px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: linear-gradient(135deg, #4da3ff, #5d63ff);
-          box-shadow: 0 8px 25px rgba(40, 130, 255, 0.35);
-          font-size: 18px;
-        }
-
-        .navLinks {
-          display: flex;
-          gap: 28px;
-        }
-
-        .navLinks a {
-          color: #c9d4e8;
-          text-decoration: none;
-          font-size: 14px;
-          transition: 0.2s;
-        }
-
-        .navLinks a:hover {
-          color: white;
-        }
-
-        .main {
-          width: min(100%, 1050px);
-          margin: 0 auto;
-          min-height: calc(100vh - 110px);
-          padding: 55px 24px 25px;
-          display: flex;
-          align-items: center;
-          flex-direction: column;
-          position: relative;
-          z-index: 2;
-        }
-
-        .badge {
-          padding: 8px 15px;
-          border: 1px solid rgba(93, 177, 255, 0.35);
-          background: rgba(52, 143, 255, 0.1);
-          color: #b8ddff;
-          border-radius: 999px;
-          font-size: 13px;
-          margin-bottom: 20px;
-          box-shadow: 0 0 25px rgba(0, 132, 255, 0.1);
-        }
-
-        .badge span {
-          color: #62c7ff;
-        }
-
-        h1 {
-          text-align: center;
-          font-size: clamp(42px, 7vw, 76px);
-          line-height: 0.98;
-          letter-spacing: -3px;
-          font-weight: 900;
-          margin-bottom: 20px;
-        }
-
-        h1 span {
-          background: linear-gradient(90deg, #ffffff, #71caff);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-        }
-
-        .subtitle {
-          color: #b5c3d9;
-          text-align: center;
-          font-size: 16px;
-          line-height: 1.6;
-          max-width: 700px;
-          margin-bottom: 28px;
-        }
-
-        .shortenerForm {
-          width: min(100%, 760px);
-          display: flex;
-          padding: 6px;
-          border-radius: 16px;
-          background: rgba(255, 255, 255, 0.08);
-          border: 1px solid rgba(105, 187, 255, 0.25);
-          box-shadow:
-            0 20px 60px rgba(0, 0, 0, 0.35),
-            0 0 35px rgba(0, 132, 255, 0.08);
-        }
-
-        .shortenerForm input {
-          flex: 1;
-          min-width: 0;
-          border: none;
-          outline: none;
-          background: transparent;
-          color: white;
-          padding: 15px 16px;
-          font-size: 15px;
-        }
-
-        .shortenerForm input::placeholder {
-          color: #8493aa;
-        }
-
-        .shortenerForm button {
-          border: none;
-          border-radius: 11px;
-          padding: 0 25px;
-          min-width: 125px;
-          background: linear-gradient(135deg, #23b5ff, #1877ff);
-          color: white;
-          font-weight: 800;
-          cursor: pointer;
-          transition: 0.2s;
-          box-shadow: 0 8px 25px rgba(23, 130, 255, 0.3);
-        }
-
-        .shortenerForm button:hover {
-          transform: translateY(-1px);
-          filter: brightness(1.08);
-        }
-
-        .shortenerForm button:disabled {
-          opacity: 0.65;
-          cursor: wait;
-          transform: none;
-        }
-
-        .hint {
-          margin-top: 9px;
-          color: #667790;
-          font-size: 11px;
-        }
-
-        .errorBox {
-          width: min(100%, 760px);
-          margin-top: 16px;
-          padding: 13px 16px;
-          border-radius: 12px;
-          background: rgba(255, 70, 90, 0.1);
-          border: 1px solid rgba(255, 90, 110, 0.3);
-          color: #ffabb7;
-          font-size: 13px;
-        }
-
-        .resultBox {
-          width: min(100%, 760px);
-          margin-top: 18px;
-          padding: 20px;
-          border-radius: 16px;
-          background: rgba(11, 24, 49, 0.85);
-          border: 1px solid rgba(75, 170, 255, 0.2);
-          box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
-        }
-
-        .resultHeader {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 14px;
-        }
-
-        .resultLabel {
-          color: #7890ae;
-          font-size: 10px;
-          letter-spacing: 1.5px;
-          font-weight: 800;
-        }
-
-        .successText {
-          color: #72e4a0;
-          font-size: 13px;
-          margin-top: 4px;
-        }
-
-        .clearButton {
-          border: none;
-          background: rgba(255, 255, 255, 0.07);
-          color: #aab8ca;
-          width: 30px;
-          height: 30px;
-          border-radius: 8px;
-          cursor: pointer;
-          font-size: 20px;
-        }
-
-        .shortLinkRow {
-          display: flex;
-          gap: 9px;
-          align-items: stretch;
-        }
-
-        .shortLink {
-          flex: 1;
-          min-width: 0;
-          display: flex;
-          align-items: center;
-          padding: 13px 15px;
-          border-radius: 10px;
-          background: rgba(0, 0, 0, 0.25);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          color: #6bc8ff;
-          text-decoration: none;
-          overflow: hidden;
-          white-space: nowrap;
-          text-overflow: ellipsis;
-          font-size: 14px;
-        }
-
-        .shortLink:hover {
-          color: white;
-          border-color: rgba(80, 180, 255, 0.4);
-        }
-
-        .copyButton,
-        .openButton {
-          border: none;
-          border-radius: 10px;
-          padding: 0 18px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          text-decoration: none;
-          font-size: 13px;
-          font-weight: 700;
-          cursor: pointer;
-        }
-
-        .copyButton {
-          background: #243a5d;
-          color: white;
-        }
-
-        .copyButton:hover {
-          background: #315075;
-        }
-
-        .openButton {
-          background: #168bff;
-          color: white;
-        }
-
-        .openButton:hover {
-          background: #3da4ff;
-        }
-
-        .redirectInfo {
-          margin-top: 12px;
-          color: #71839d;
-          font-size: 11px;
-          text-align: center;
-        }
-
-        .features {
-          width: min(100%, 760px);
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 12px;
-          margin-top: 20px;
-        }
-
-        .feature {
-          min-width: 0;
-          padding: 16px;
-          border-radius: 14px;
-          background: rgba(11, 24, 49, 0.75);
-          border: 1px solid rgba(255, 255, 255, 0.07);
-          display: flex;
-          align-items: center;
-          gap: 12px;
-        }
-
-        .featureIcon {
-          width: 38px;
-          height: 38px;
-          flex-shrink: 0;
-          border-radius: 10px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: rgba(50, 150, 255, 0.1);
-          font-size: 18px;
-        }
-
-        .feature h3 {
-          font-size: 13px;
-          margin-bottom: 4px;
-        }
-
-        .feature p {
-          color: #73859f;
-          font-size: 11px;
-          line-height: 1.4;
-        }
-
-        .about {
-          width: min(100%, 760px);
-          margin-top: 20px;
-          text-align: center;
-          padding: 16px;
-        }
-
-        .about h2 {
-          font-size: 14px;
-          margin-bottom: 5px;
-        }
-
-        .about p {
-          color: #687b95;
-          font-size: 11px;
-          line-height: 1.5;
-        }
-
-        footer {
-          text-align: center;
-          padding: 12px 20px 20px;
-          color: #55667d;
-          font-size: 10px;
-          position: relative;
-          z-index: 2;
-        }
-
-        /* Tablet */
-        @media (max-width: 800px) {
-          .main {
-            padding-top: 42px;
-          }
-
-          h1 {
-            font-size: clamp(40px, 9vw, 62px);
-          }
-
-          .features {
-            grid-template-columns: repeat(3, 1fr);
-          }
-
-          .feature {
-            padding: 13px;
-          }
-        }
-
-        /* Mobile */
-        @media (max-width: 600px) {
-          .navbar {
-            height: 60px;
-            padding: 0 18px;
-          }
-
-          .brand {
-            font-size: 15px;
-          }
-
-          .brandIcon {
-            width: 30px;
-            height: 30px;
-          }
-
-          .navLinks {
-            gap: 13px;
-          }
-
-          .navLinks a {
-            font-size: 11px;
-          }
-
-          .main {
-            min-height: auto;
-            padding: 38px 14px 18px;
-          }
-
-          .badge {
-            font-size: 10px;
-            padding: 7px 11px;
-            margin-bottom: 15px;
-          }
-
-          h1 {
-            font-size: clamp(38px, 12vw, 54px);
-            letter-spacing: -2px;
-            line-height: 1;
-          }
-
-          .subtitle {
-            font-size: 12px;
-            line-height: 1.5;
-            margin-bottom: 20px;
-          }
-
-          .desktopBreak {
-            display: none;
-          }
-
-          .shortenerForm {
-            padding: 5px;
-            border-radius: 13px;
-          }
-
-          .shortenerForm input {
-            padding: 13px 10px;
-            font-size: 13px;
-          }
-
-          .shortenerForm button {
-            min-width: 92px;
-            padding: 0 10px;
-            font-size: 12px;
-          }
-
-          .hint {
-            font-size: 9px;
-          }
-
-          .features {
-            grid-template-columns: 1fr;
-            gap: 8px;
-            margin-top: 16px;
-          }
-
-          .feature {
-            padding: 11px;
-          }
-
-          .featureIcon {
-            width: 34px;
-            height: 34px;
-            font-size: 16px;
-          }
-
-          .feature h3 {
-            font-size: 12px;
-          }
-
-          .feature p {
-            font-size: 10px;
-          }
-
-          .resultBox {
-            padding: 14px;
-          }
-
-          .shortLinkRow {
-            flex-direction: column;
-          }
-
-          .shortLink {
-            min-height: 44px;
-          }
-
-          .copyButton,
-          .openButton {
-            min-height: 42px;
-            width: 100%;
-          }
-
-          .about {
-            margin-top: 12px;
-          }
-        }
-
-        /* Very small phones */
-        @media (max-width: 380px) {
-          .navLinks a {
-            display: none;
-          }
-
-          h1 {
-            font-size: 36px;
-          }
-
-          .shortenerForm button {
-            min-width: 82px;
-          }
-        }
-      `}</style>
-    </>
+    </div>
   );
 }
 
-export default App;
+/* ─── Single shortener ────────────────────────────────────── */
+function Single({ onNew, token }) {
+  const [url, setUrl] = useState(""); const [res, setRes] = useState(null);
+  const [loading, setLoading] = useState(false); const [copied, setCopied] = useState(false);
+  const [err, setErr] = useState(""); const [qr, setQr] = useState(false);
+  const submit = async (e) => {
+    e.preventDefault(); const t = url.trim();
+    if (!t) { setErr("Please enter a URL."); return; }
+    if (!/^https?:\/\//i.test(t)) { setErr("URL must start with http:// or https://"); return; }
+    setLoading(true); setErr(""); setRes(null); setCopied(false); setQr(false);
+    try {
+      const r = await fetch(`${API}/shorten`, { method: "POST", headers: requestHeaders(token, true), body: JSON.stringify({ url: t }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || "Failed");
+      const entry = { original: t, short: d.short_url, code: d.short_code, ts: Date.now() };
+      setRes(entry); onNew(entry);
+    } catch (e2) { setErr(e2.message); }
+    finally { setLoading(false); }
+  };
+  const copy = async () => { await navigator.clipboard.writeText(res.short); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  return (
+    <div className="card tilt3d">
+      <div className="cardLabel">Single URL</div>
+      <form className="inputRow" onSubmit={submit}>
+        <div className="inputWrap">
+          <span className="inputIcon">🔗</span>
+          <input id="single-url-input" type="url" value={url} onChange={e => { setUrl(e.target.value); setErr(""); }} placeholder="Paste your long URL here…" autoComplete="off" />
+        </div>
+        <button type="submit" className="btn btnPrimary" disabled={loading} id="single-shorten-btn">
+          {loading ? <><span className="spin" /> <span role="status">Shortening…</span></> : <><span>Shorten</span><span className="arr">↗</span></>}
+        </button>
+      </form>
+      <p className="hint">Each account or guest network can shorten the same URL up to 5 times.</p>
+      {err && <div className="errBox" role="alert">⚠ {err}</div>}
+      {res && (
+        <div className="resultBox" id="single-result">
+          <div className="rbTop"><span className="rbOk">✓ Link created!</span><button className="rbX" onClick={() => { setRes(null); setUrl(""); setQr(false); }}>×</button></div>
+          <div className="rbRow">
+            <a href={res.short} className="rbLink" target="_blank" rel="noopener noreferrer">{res.short}</a>
+            <button className={`btn btnSm ${copied ? "btnGreen" : "btnGhost"}`} onClick={copy} id="single-copy-btn">{copied ? "✓ Copied" : "Copy"}</button>
+            <a href={res.short} className="btn btnSm btnBlue" target="_blank" rel="noopener noreferrer" id="single-open-btn">Open ↗</a>
+            <button className={`btn btnSm ${qr ? "btnActive" : "btnGhost"}`} onClick={() => setQr(v => !v)} id="single-qr-btn">QR</button>
+          </div>
+          <p className="rbSrc">Redirects to {domainOf(res.original)}</p>
+          {qr && <div className="qrBox"><img src={qrUrl(res.short)} alt="QR Code" className="qrImg" /><a href={qrUrl(res.short)} download="qr.png" className="qrDl">⤓ Download QR</a></div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Bulk shortener ──────────────────────────────────────── */
+function Bulk({ onNew, token }) {
+  const [text, setText] = useState(""); const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false); const [prog, setProg] = useState(0);
+  const [copiedIdx, setCopiedIdx] = useState(null); const [err, setErr] = useState("");
+  const [qrIdx, setQrIdx] = useState(null);
+  const parse = (s) => s.split(/[\n,]+/).map(x => x.trim()).filter(Boolean);
+  const submit = async () => {
+    const urls = parse(text);
+    if (!urls.length) { setErr("Paste at least one URL."); return; }
+    if (urls.length > 20) { setErr("Max 20 URLs at once."); return; }
+    const bad = urls.filter(u => !/^https?:\/\//i.test(u));
+    if (bad.length) { setErr(`Invalid: ${bad.slice(0, 2).join(", ")}`); return; }
+    setLoading(true); setErr(""); setResults([]); setProg(0);
+    const out = [];
+    for (let i = 0; i < urls.length; i++) {
+      try {
+        const r = await fetch(`${API}/shorten`, { method: "POST", headers: requestHeaders(token, true), body: JSON.stringify({ url: urls[i] }) });
+        const d = await r.json();
+        const e = r.ok ? { original: urls[i], short: d.short_url, code: d.short_code, ts: Date.now(), ok: true } : { original: urls[i], error: d.detail || "Failed", ok: false };
+        out.push(e); if (e.ok) onNew(e);
+      } catch { out.push({ original: urls[i], error: "Network error", ok: false }); }
+      setProg(Math.round(((i + 1) / urls.length) * 100)); setResults([...out]);
+    }
+    setLoading(false);
+  };
+  const copyOne = async (i) => { await navigator.clipboard.writeText(results[i].short); setCopiedIdx(i); setTimeout(() => setCopiedIdx(null), 1800); };
+  const copyAll = () => navigator.clipboard.writeText(results.filter(r => r.ok).map(r => `${r.original} → ${r.short}`).join("\n"));
+  const csv = () => {
+    const rows = ["Original,Short,Status", ...results.map(r => r.ok ? `"${r.original}","${r.short}","OK"` : `"${r.original}","","${r.error}"`)];
+    const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" })), download: "links.csv" }); a.click();
+  };
+  const cnt = parse(text).length;
+  return (
+    <div className="card tilt3d">
+      <div className="cardLabel" style={{ color: "#b78bfa" }}>Bulk URLs <span className="cardTag">up to 20</span></div>
+      <div className="taWrap">
+        <textarea id="bulk-url-textarea" value={text} onChange={e => { setText(e.target.value); setErr(""); }}
+          placeholder={"One URL per line or comma-separated:\nhttps://example.com/very/long/url\nhttps://another.site/path?q=123"} rows={5} />
+        <div className="taMeta">
+          <span>{cnt > 0 ? `${cnt} URL${cnt > 1 ? "s" : ""} detected` : "No URLs yet"}</span>
+          <button className="ghostBtn" onClick={() => { setText(""); setResults([]); setErr(""); }} disabled={!text && !results.length}>Clear</button>
+        </div>
+      </div>
+      {err && <div className="errBox" role="alert">⚠ {err}</div>}
+      {loading && <div className="progWrap"><div className="progBar"><div className="progFill" style={{ width: prog + "%" }} /></div><span className="progLbl">{prog}%</span></div>}
+      <div className="bulkBtns">
+        <button className="btn btnPrimary" onClick={submit} disabled={loading || !text.trim()} id="bulk-shorten-btn">
+          {loading ? <><span className="spin" /> Processing…</> : <><span>Shorten All</span><span className="arr">↗</span></>}
+        </button>
+        {results.length > 0 && <><button className="btn btnGhost" onClick={copyAll} id="bulk-copy-all-btn">Copy All</button><button className="btn btnGhost" onClick={csv} id="bulk-export-btn">Export CSV ⤓</button></>}
+      </div>
+      {results.length > 0 && (
+        <div className="bulkList">
+          <div className="bulkListHdr">{results.filter(r => r.ok).length}/{results.length} shortened</div>
+          {results.map((r, i) => (
+            <div key={i} className={`bulkRow ${r.ok ? "bulkOk" : "bulkErr"}`} id={`bulk-result-${i}`}>
+              <span className="brDomain" title={`Redirects to ${r.original}`}>Redirects to {domainOf(r.original)}</span>
+              {r.ok ? <>
+                <a href={r.short} className="brShort" target="_blank" rel="noopener noreferrer">{r.short}</a>
+                <button className={`btn btnSm ${copiedIdx === i ? "btnGreen" : "btnGhost"}`} onClick={() => copyOne(i)} id={`bulk-copy-${i}`}>{copiedIdx === i ? "✓" : "Copy"}</button>
+                <button className={`btn btnSm ${qrIdx === i ? "btnActive" : "btnGhost"}`} onClick={() => setQrIdx(qrIdx === i ? null : i)} id={`bulk-qr-${i}`}>QR</button>
+              </> : <span className="brErr">{r.error}</span>}
+              {r.ok && qrIdx === i && <div className="qrBox qrInline"><img src={qrUrl(r.short)} alt="QR" className="qrImg" /></div>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── History ─────────────────────────────────────────────── */
+function History({ history, onClear, canClear }) {
+  const [ci, setCi] = useState(null);
+  const copy = async (u, i) => { await navigator.clipboard.writeText(u); setCi(i); setTimeout(() => setCi(null), 1600); };
+  return (
+    <section className="histSec" id="history">
+      <div className="histHdr">
+        <h2 className="histTitle">Recent Links</h2>
+        {history.length > 0 && canClear && <button className="ghostBtn red" onClick={onClear}>Clear all</button>}
+      </div>
+      {history.length === 0
+        ? <p className="histEmpty">Your shortened links will appear here.</p>
+        : history.map((h, i) => (
+          <div className="histRow" key={i}>
+            <div className="histLeft"><div className="histDomain">Redirects to {domainOf(h.original)}</div><div className="histTime">{fmtDate(h.ts)}</div></div>
+            <a href={h.short} className="histCode" target="_blank" rel="noopener noreferrer">{h.short}</a>
+            <button className={`btn btnSm ${ci === i ? "btnGreen" : "btnGhost"}`} onClick={() => copy(h.short, i)}>{ci === i ? "✓" : "Copy"}</button>
+          </div>
+        ))}
+    </section>
+  );
+}
+
+function StatsPanel({ stats, error }) {
+  const days = stats?.clicks_by_day || [];
+  const maxDailyClicks = Math.max(1, ...days.map(day => day.clicks));
+  const topLinks = stats?.top_links || [];
+  const maxLinkClicks = Math.max(1, ...topLinks.map(link => link.clicks));
+
+  return (
+    <section className="analytics" aria-labelledby="analytics-title">
+      <div className="analyticsHeader">
+        <div>
+          <div className="sectTag analyticsTag">LIVE OVERVIEW</div>
+          <h2 className="analyticsTitle" id="analytics-title">Your links in motion</h2>
+        </div>
+        <span className="liveBadge"><span /> Live stats</span>
+      </div>
+      {error && <p className="analyticsMessage" role="status">{error}</p>}
+      <div className="analyticsGrid">
+        <article className="analyticsCard analyticsClicks">
+          <div className="analyticsCardTop"><span>Total clicks</span><span className="analyticsIcon">↗</span></div>
+          <strong className="analyticsNumber">{stats ? stats.total_clicks.toLocaleString() : "—"}</strong>
+          <span className="analyticsFoot">Across all shortened links</span>
+          <div className="sparkline" aria-hidden="true">
+            {days.map((day, index) => (
+              <span
+                key={day.date}
+                title={`${day.clicks} clicks`}
+                style={{ height: `${Math.max(8, (day.clicks / maxDailyClicks) * 100)}%`, animationDelay: `${index * 55}ms` }}
+              />
+            ))}
+          </div>
+        </article>
+        <article className="analyticsCard">
+          <div className="analyticsCardTop"><span>Community</span><span className="analyticsIcon">◎</span></div>
+          <strong className="analyticsNumber">{stats ? stats.total_users.toLocaleString() : "—"}</strong>
+          <span className="analyticsFoot">Registered users</span>
+          <div className="communityVisual" aria-hidden="true">
+            <i /><i /><i /><i /><i /><i /><i />
+          </div>
+        </article>
+        <article className="analyticsCard">
+          <div className="analyticsCardTop"><span>Links created</span><span className="analyticsIcon">⌁</span></div>
+          <strong className="analyticsNumber">{stats ? stats.total_links.toLocaleString() : "—"}</strong>
+          <span className="analyticsFoot">Ready to share</span>
+          <div className="linkVisual" aria-hidden="true"><span /><span /><span /><span /><span /></div>
+        </article>
+        <article className="analyticsCard trafficCard">
+          <div className="analyticsCardTop"><span>Click activity</span><span className="analyticsPeriod">LAST 7 DAYS</span></div>
+          <div className="trafficChart" role="img" aria-label="Daily short-link clicks during the last 7 days">
+            {days.map(day => (
+              <div className="trafficDay" key={day.date} title={`${day.clicks} clicks`}>
+                <span className="trafficCount">{day.clicks || ""}</span>
+                <div className="trafficTrack">
+                  <span className="trafficBar" style={{ height: `${Math.max(day.clicks ? 10 : 3, (day.clicks / maxDailyClicks) * 100)}%` }} />
+                </div>
+                <span className="trafficLabel">{new Date(`${day.date}T12:00:00`).toLocaleDateString(undefined, { weekday: "short" })}</span>
+              </div>
+            ))}
+          </div>
+        </article>
+        <article className="analyticsCard topLinksCard">
+          <div className="analyticsCardTop"><span>Top links</span><span className="analyticsPeriod">BY CLICKS</span></div>
+          {topLinks.length === 0
+            ? <p className="analyticsMessage">Your links’ click activity will show up here.</p>
+            : <div className="topLinksList">
+              {topLinks.map(link => (
+                <div className="topLinkItem" key={link.short_code}>
+                  <div className="topLinkLabels">
+                    <span title={link.original_url}>{domainOf(link.original_url)}</span>
+                    <strong>{link.clicks.toLocaleString()}</strong>
+                  </div>
+                  <div className="topLinkTrack">
+                    <span style={{ width: `${Math.max(4, (link.clicks / maxLinkClicks) * 100)}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>}
+        </article>
+      </div>
+    </section>
+  );
+}
+
+function AuthDialog({ onClose, onAuthenticated, initialNotice }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState(initialNotice || "");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    const normalizedEmail = email.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const endpoint = mode === "verification"
+        ? "resend-verification"
+        : mode === "login" ? "login" : "register";
+      const payload = mode === "verification"
+        ? { email: normalizedEmail }
+        : { email: normalizedEmail, password };
+      const response = await fetch(`${API}/auth/${endpoint}`, {
+        method: "POST",
+        headers: requestHeaders(null, true),
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        const message = Array.isArray(data.detail)
+          ? data.detail.map(item => item.msg).join(" ")
+          : data.detail;
+        if (response.status === 409 && mode === "register") {
+          setMode("verification");
+          setNotice("An account already exists for this email. Request a verification link, or sign in if it is already verified.");
+          return;
+        }
+        if (response.status === 403) {
+          setMode("verification");
+          setNotice(message);
+          return;
+        }
+        throw new Error(message || "Unable to sign in.");
+      }
+      if (mode === "register") {
+        setMode("verification");
+        setPassword("");
+        setNotice(data.message);
+        return;
+      }
+      if (mode === "verification") {
+        setNotice(data.message);
+        return;
+      }
+      await onAuthenticated(data);
+    } catch (requestError) {
+      setError(requestError.message || "Unable to connect. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="authBackdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="authDialog" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        <button className="authClose" type="button" onClick={onClose} aria-label="Close sign in">×</button>
+        <div className="authIcon">🔐</div>
+        <p className="authEyebrow">LINKSNIP ACCOUNT</p>
+        <h2 id="auth-title">{mode === "login" ? "Welcome back" : mode === "verification" ? "Verify your email" : "Create your account"}</h2>
+        <p className="authIntro">
+          {mode === "verification"
+            ? "Check your inbox and click the verification link before signing in."
+            : "Save your links and access them from any device. Email verification is required."}
+        </p>
+        <form className="authForm" onSubmit={submit}>
+          <label htmlFor="auth-email">Email address</label>
+          <input
+            id="auth-email"
+            type="email"
+            autoComplete="email"
+            required
+            maxLength={254}
+            value={email}
+            onChange={event => { setEmail(event.target.value); setError(""); setNotice(""); }}
+            onInvalid={event => event.currentTarget.setCustomValidity("Enter a valid email address.")}
+            onInput={event => event.currentTarget.setCustomValidity("")}
+            placeholder="you@example.com"
+          />
+          {mode !== "verification" && <>
+            <label htmlFor="auth-password">Password</label>
+            <input
+              id="auth-password"
+              type="password"
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              required
+              minLength={8}
+              maxLength={128}
+              value={password}
+              onChange={event => { setPassword(event.target.value); setError(""); }}
+              placeholder="At least 8 characters"
+            />
+          </>}
+          {notice && <div className="authNotice" role="status">{notice}</div>}
+          {error && <div className="errBox" role="alert">{error}</div>}
+          <button className="btn btnPrimary authSubmit" type="submit" disabled={busy}>
+            {busy ? <><span className="spin" /> Please wait…</> : mode === "login" ? "Sign in" : mode === "verification" ? "Resend verification link" : "Create account"}
+          </button>
+        </form>
+        <p className="authSwitch">
+          {mode === "verification" ? "Already verified?" : mode === "login" ? "New to LinkSnip?" : "Already have an account?"}
+          {" "}
+          <button type="button" onClick={() => { setMode(mode === "register" ? "login" : "register"); setError(""); setNotice(""); }}>
+            {mode === "verification" || mode === "register" ? "Sign in" : "Create account"}
+          </button>
+        </p>
+      </section>
+    </div>
+  );
+}
+
+/* ─── Main App ────────────────────────────────────────────── */
+export default function App() {
+  const interactiveRef = useRef(null);
+  const [shortRedirectCode] = useState(() => new URLSearchParams(window.location.search).get("r") || "");
+  const [redirectError, setRedirectError] = useState("");
+  const [tab, setTab] = useState("single");
+  const [history, setHistory] = useState(getHistory);
+  const [token, setToken] = useState(() => localStorage.getItem("ls_token") || "");
+  const [user, setUser] = useState(null);
+  const [authOpen, setAuthOpen] = useState(() => new URLSearchParams(window.location.search).get("verified") === "1");
+  const [authNotice, setAuthNotice] = useState(() => (
+    new URLSearchParams(window.location.search).get("verified") === "1"
+      ? "Email verified. You can now sign in."
+      : ""
+  ));
+  const [stats, setStats] = useState(null);
+  const [statsError, setStatsError] = useState("");
+  const [statsVersion, setStatsVersion] = useState(0);
+  const addToHistory = useCallback((entry) => {
+    setStatsVersion(version => version + 1);
+    setHistory(prev => { const n = [entry, ...prev.filter(h => h.short !== entry.short)]; saveHistory(n); return n; });
+  }, []);
+  const clearHistory = () => { setHistory([]); localStorage.removeItem("ls_history"); };
+  useEffect(() => {
+    if (!shortRedirectCode) return undefined;
+    let cancelled = false;
+    const resolveShortUrl = async () => {
+      try {
+        const response = await fetch(`${API}/resolve/${encodeURIComponent(shortRedirectCode)}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Short URL not found.");
+        if (!cancelled) window.location.replace(data.original_url);
+      } catch (error) {
+        if (!cancelled) setRedirectError(error.message || "Unable to open this short link.");
+      }
+    };
+    resolveShortUrl();
+    return () => { cancelled = true; };
+  }, [shortRedirectCode]);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("verified") !== "1") return;
+    params.delete("verified");
+    const query = params.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+    );
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const loadStats = async () => {
+      try {
+        const response = await fetch(`${API}/stats`, { headers: requestHeaders(token) });
+        if (!response.ok) throw new Error("Stats are temporarily unavailable.");
+        const data = await response.json();
+        if (cancelled) return;
+        setStats(data);
+        setStatsError("");
+      } catch (error) {
+        if (cancelled) return;
+        setStatsError(error.message || "Stats are temporarily unavailable.");
+      }
+    };
+    loadStats();
+    const interval = window.setInterval(loadStats, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [token, statsVersion]);
+  useEffect(() => {
+    const root = interactiveRef.current;
+    if (!root) return undefined;
+
+    const resetTilt = (surface) => {
+      surface.style.setProperty("--tilt-x", "0deg");
+      surface.style.setProperty("--tilt-y", "0deg");
+      surface.style.setProperty("--pointer-x", "50%");
+      surface.style.setProperty("--pointer-y", "50%");
+      surface.style.setProperty("--tilt-lift", "0px");
+    };
+    const onPointerMove = (event) => {
+      if (event.pointerType !== "mouse") return;
+      const surface = event.target.closest(".tilt3d");
+      if (!surface || !root.contains(surface)) return;
+      const bounds = surface.getBoundingClientRect();
+      const x = (event.clientX - bounds.left) / bounds.width;
+      const y = (event.clientY - bounds.top) / bounds.height;
+      const strength = surface.classList.contains("featCard") ? 7 : 4;
+      surface.style.setProperty("--tilt-x", `${(0.5 - y) * strength}deg`);
+      surface.style.setProperty("--tilt-y", `${(x - 0.5) * strength}deg`);
+      surface.style.setProperty("--pointer-x", `${x * 100}%`);
+      surface.style.setProperty("--pointer-y", `${y * 100}%`);
+      surface.style.setProperty("--tilt-lift", surface.classList.contains("featCard") ? "-4px" : "-2px");
+    };
+    const onPointerOut = (event) => {
+      const surface = event.target.closest(".tilt3d");
+      if (surface && !surface.contains(event.relatedTarget)) resetTilt(surface);
+    };
+
+    root.addEventListener("pointermove", onPointerMove);
+    root.addEventListener("pointerout", onPointerOut);
+    return () => {
+      root.removeEventListener("pointermove", onPointerMove);
+      root.removeEventListener("pointerout", onPointerOut);
+    };
+  }, []);
+  useEffect(() => {
+    if (!token) return undefined;
+    let cancelled = false;
+    const restoreAccount = async () => {
+      try {
+        const headers = requestHeaders(token);
+        const [accountResponse, linksResponse] = await Promise.all([
+          fetch(`${API}/auth/me`, { headers }),
+          fetch(`${API}/my-links`, { headers }),
+        ]);
+        if ([401, 403].includes(accountResponse.status) || [401, 403].includes(linksResponse.status)) {
+          localStorage.removeItem("ls_token");
+          setToken("");
+          setUser(null);
+          setHistory(getHistory());
+          return;
+        }
+        if (!accountResponse.ok || !linksResponse.ok) throw new Error("Account sync failed.");
+        const account = await accountResponse.json();
+        const links = await linksResponse.json();
+        if (cancelled) return;
+        setUser(account);
+        setHistory(links.map(link => ({
+          original: link.original_url,
+          short: link.short_url,
+          code: link.short_code,
+          ts: link.created_at ? new Date(link.created_at).getTime() : Date.now(),
+        })));
+      } catch (error) {
+        if (cancelled) return;
+        console.error("Unable to restore account:", error);
+      }
+    };
+    restoreAccount();
+    return () => { cancelled = true; };
+  }, [token]);
+  const handleAuthenticated = async (data) => {
+    localStorage.setItem("ls_token", data.access_token);
+    setToken(data.access_token);
+    setUser(data.user);
+    setAuthOpen(false);
+  };
+  const signOut = async () => {
+    try {
+      const response = await fetch(`${API}/auth/logout`, { method: "POST", headers: requestHeaders(token) });
+      if (!response.ok) throw new Error("Could not revoke the server session.");
+    } catch (error) {
+      console.error("Sign-out request failed:", error);
+    } finally {
+      localStorage.removeItem("ls_token");
+      setToken("");
+      setUser(null);
+      setHistory(getHistory());
+    }
+  };
+
+  if (shortRedirectCode) {
+    return (
+      <main role={redirectError ? "alert" : "status"} style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24, color: "#cde0f5", background: "#04080f", fontFamily: "Inter, sans-serif" }}>
+        {redirectError || "Opening your link…"}
+      </main>
+    );
+  }
+
+  return (
+    <>
+      {/* ───────────────── GLOBAL CSS ───────────────── */}
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300..900;1,14..32,300..900&family=Syne:wght@700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; color-scheme: dark; }
+
+        body {
+          font-family: 'Inter', sans-serif;
+          background: #04080f;
+          color: #cde0f5;
+          min-height: 100vh;
+          overflow-x: hidden;
+        }
+
+        /* ── Scrollbar ── */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #1a3a60; border-radius: 99px; }
+
+        /* ═══════════════════════════════════════════════
+           BACKGROUND
+        ═══════════════════════════════════════════════ */
+        .bgRoot {
+          position: fixed; inset: 0; z-index: 0;
+          background:
+            radial-gradient(ellipse 80% 60% at 50% -10%, rgba(14,80,200,0.22) 0%, transparent 60%),
+            radial-gradient(ellipse 50% 40% at 90% 80%, rgba(100,40,200,0.14) 0%, transparent 55%),
+            radial-gradient(ellipse 60% 50% at 0% 100%, rgba(0,60,160,0.1) 0%, transparent 50%),
+            #04080f;
+          pointer-events: none;
+        }
+
+        /* Dot-grid mesh */
+        .bgMesh {
+          position: fixed; inset: 0; z-index: 0; pointer-events: none;
+          background-image: radial-gradient(circle, rgba(60,130,255,0.12) 1px, transparent 1px);
+          background-size: 40px 40px;
+          mask-image: radial-gradient(ellipse 90% 90% at 50% 30%, black 30%, transparent 80%);
+        }
+
+        /* Floating orbs */
+        .orb { position: fixed; border-radius: 50%; filter: blur(80px); pointer-events: none; z-index: 0; }
+        .orb1 { width: 700px; height: 500px; top: -180px; left: -200px; background: rgba(14,90,220,0.15); animation: orbDrift 16s ease-in-out infinite alternate; }
+        .orb2 { width: 500px; height: 400px; top: 25%; right: -150px; background: rgba(110,40,220,0.12); animation: orbDrift 11s ease-in-out infinite alternate-reverse; }
+        .orb3 { width: 400px; height: 300px; bottom: -80px; left: 25%; background: rgba(0,120,230,0.1); animation: orbDrift 14s ease-in-out infinite alternate; }
+        @keyframes orbDrift { from { transform: translate(0,0) scale(1); } to { transform: translate(40px,50px) scale(1.12); } }
+
+        /* ═══════════════════════════════════════════════
+           NAV
+        ═══════════════════════════════════════════════ */
+        .nav {
+          position: sticky; top: 0; z-index: 200;
+          display: flex; align-items: center; justify-content: space-between;
+          padding: 0 6%; height: 68px;
+          background: rgba(4,8,15,0.65);
+          backdrop-filter: blur(24px) saturate(1.6);
+          border-bottom: 1px solid rgba(60,140,255,0.09);
+        }
+        .navBrand {
+          display: flex; align-items: center; gap: 11px;
+          font-family: 'Syne', sans-serif; font-weight: 800; font-size: 20px;
+          color: #fff; text-decoration: none; letter-spacing: -0.5px;
+        }
+        .navLogo {
+          width: 38px; height: 38px; border-radius: 11px; font-size: 19px;
+          display: flex; align-items: center; justify-content: center;
+          background: linear-gradient(135deg, #2a7fff, #8b40f0);
+          box-shadow: 0 0 24px rgba(60,140,255,0.45), 0 0 8px rgba(139,64,240,0.3);
+          animation: logoPulse 3.5s ease-in-out infinite;
+        }
+        @keyframes logoPulse {
+          0%,100% { box-shadow: 0 0 24px rgba(60,140,255,0.45), 0 0 8px rgba(139,64,240,0.3); }
+          50% { box-shadow: 0 0 36px rgba(60,140,255,0.7), 0 0 18px rgba(139,64,240,0.5); }
+        }
+        .navLinks { display: flex; align-items: center; gap: 28px; }
+        .navLinks a { color: #7090b8; text-decoration: none; font-size: 13.5px; font-weight: 500; transition: color 0.22s; }
+        .navLinks a:hover { color: #d0e8ff; }
+        .navAuth {
+          border: 1px solid rgba(80,150,255,0.24); border-radius: 9px;
+          padding: 8px 14px; color: #9ccaff; background: rgba(20,50,100,0.32);
+          font: 600 13px 'Inter',sans-serif; cursor: pointer; transition: all .2s;
+        }
+        .navAuth:hover { color: #fff; border-color: rgba(80,150,255,0.55); background: rgba(40,90,170,0.35); }
+        .navUser { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #6e8db1; font-size: 12px; }
+        .navCta {
+          padding: 8px 20px; border-radius: 9px; font-weight: 700 !important;
+          color: #fff !important; font-size: 13px !important;
+          background: linear-gradient(135deg, #2279ff, #8040f0);
+          box-shadow: 0 4px 18px rgba(40,120,255,0.4);
+          transition: transform 0.2s, box-shadow 0.2s !important;
+        }
+        .navCta:hover { transform: translateY(-2px) !important; box-shadow: 0 8px 28px rgba(40,120,255,0.55) !important; }
+
+        /* ═══════════════════════════════════════════════
+           LAYOUT
+        ═══════════════════════════════════════════════ */
+        .appRoot { position: relative; z-index: 1; }
+        .wrap { width: min(100%, 1120px); margin: 0 auto; padding: 0 28px; }
+
+        /* ═══════════════════════════════════════════════
+           HERO
+        ═══════════════════════════════════════════════ */
+        .hero {
+          display: flex; align-items: center; gap: 50px;
+          padding: 80px 0 56px;
+        }
+        .heroLeft { flex: 1; }
+
+        /* Animated pill badge */
+        .pill {
+          display: inline-flex; align-items: center; gap: 9px;
+          padding: 7px 16px; border-radius: 999px; margin-bottom: 26px;
+          background: rgba(30,100,255,0.09);
+          border: 1px solid rgba(60,150,255,0.22);
+          font-size: 12.5px; font-weight: 600; color: #80c4ff;
+          letter-spacing: 0.4px;
+          animation: fadeUp .6s ease both;
+        }
+        .pillDot {
+          width: 7px; height: 7px; border-radius: 50%;
+          background: #30f0a0; box-shadow: 0 0 10px #30f0a0;
+          animation: blink 2s ease-in-out infinite;
+        }
+        @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:.25;} }
+
+        /* Heading */
+        .heroH1 {
+          font-family: 'Syne', sans-serif;
+          font-size: clamp(44px, 5.8vw, 78px);
+          font-weight: 800; line-height: .96;
+          letter-spacing: -3px; margin-bottom: 22px;
+          color: #fff;
+          animation: fadeUp .7s .08s ease both;
+        }
+        .heroH1 .line2 {
+          display: block;
+          background: linear-gradient(100deg, #60d0ff 0%, #b080ff 50%, #ff80c0 100%);
+          -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+          background-size: 200% auto;
+          animation: fadeUp .7s .08s ease both, gradFlow 5s linear infinite;
+        }
+        @keyframes gradFlow { 0%{background-position:0%} 100%{background-position:200%} }
+
+        .heroSub {
+          color: #6080a8; font-size: 16px; line-height: 1.7;
+          max-width: 460px; margin-bottom: 32px;
+          animation: fadeUp .8s .15s ease both;
+        }
+        .heroSub strong { color: #a080f8; font-weight: 600; }
+
+        /* Stat chips below sub */
+        .heroChips { display: flex; gap: 10px; flex-wrap: wrap; animation: fadeUp .9s .22s ease both; }
+        .chip {
+          padding: 5px 13px; border-radius: 999px;
+          background: rgba(20,40,80,0.7);
+          border: 1px solid rgba(60,120,220,0.18);
+          font-size: 12px; font-weight: 600; color: #5080b0;
+        }
+
+        /* ─── 3-D card ─── */
+        .hcWrap {
+          flex: 0 0 260px; perspective: 900px;
+          display: flex; align-items: center; justify-content: center;
+          animation: fadeRight .9s .12s ease both;
+        }
+        .hc {
+          width: 230px; height: 290px; border-radius: 26px;
+          background: linear-gradient(155deg, rgba(10,22,60,0.95) 0%, rgba(6,12,36,0.98) 100%);
+          border: 1px solid rgba(60,150,255,0.18);
+          box-shadow:
+            0 0 0 1px rgba(60,150,255,0.06),
+            0 30px 80px rgba(0,0,0,0.6),
+            0 0 60px rgba(40,110,255,0.1);
+          transition: transform .12s ease;
+          position: relative; overflow: hidden; transform-style: preserve-3d;
+        }
+        .hcSpin {
+          position: absolute; width: 200%; height: 200%; top: -50%; left: -50%;
+          background: conic-gradient(from 0deg, transparent 0%, rgba(60,140,255,0.1) 20%, transparent 40%);
+          animation: spin 10s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .hcBody { position: relative; z-index: 2; padding: 28px 22px; display: flex; flex-direction: column; gap: 14px; }
+        .hcEmoji { font-size: 44px; filter: drop-shadow(0 0 18px rgba(60,160,255,0.6)); }
+        .hcBars { display: flex; flex-direction: column; gap: 9px; }
+        .hcBar { height: 7px; border-radius: 99px; background: linear-gradient(90deg, #1a5cff, #8040e0); animation: shimBar 2s ease-in-out infinite alternate; }
+        @keyframes shimBar { 0%{opacity:.35;} 100%{opacity:1;} }
+        .hcTag {
+          padding: 5px 14px; border-radius: 999px; width: fit-content;
+          background: linear-gradient(90deg, #102060, #300c60);
+          font-size: 9px; font-weight: 800; letter-spacing: 2px; color: #80b8ff;
+        }
+        .hcArrow {
+          position: absolute; bottom: 22px; right: 22px;
+          font-size: 30px; color: rgba(80,180,255,0.45);
+          animation: arrowPop 2s ease-in-out infinite;
+        }
+        @keyframes arrowPop { 0%,100%{transform:translate(0,0)} 50%{transform:translate(5px,-5px)} }
+        .hcBlob { position: absolute; border-radius: 50%; filter: blur(35px); pointer-events: none; }
+        .b1 { width: 110px; height: 110px; background: #1050cc; bottom: -30px; right: -20px; opacity: .5; }
+        .b2 { width: 80px; height: 80px; background: #6020cc; top: -10px; right: 20px; opacity: .4; }
+        .hcGlare {
+          position: absolute; inset: 0;
+          background: linear-gradient(135deg, rgba(255,255,255,0.04) 0%, transparent 50%);
+          border-radius: inherit; pointer-events: none;
+        }
+
+        /* ═══════════════════════════════════════════════
+           STATS STRIP
+        ═══════════════════════════════════════════════ */
+        .statsStrip {
+          display: flex; align-items: stretch;
+          margin: 0 0 44px;
+          border-radius: 18px; overflow: hidden;
+          border: 1px solid rgba(40,100,220,0.13);
+          background: rgba(6,12,32,0.6);
+          backdrop-filter: blur(10px);
+          animation: fadeUp 1s .28s ease both;
+        }
+        .sStat {
+          flex: 1; text-align: center; padding: 18px 12px;
+          border-right: 1px solid rgba(40,100,220,0.1);
+          position: relative; overflow: hidden;
+        }
+        .tilt3d {
+          transform: perspective(1000px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg)) translateY(var(--tilt-lift, 0px));
+          transform-style: preserve-3d;
+          transition: transform .18s ease-out, box-shadow .22s ease, border-color .22s ease;
+          will-change: transform;
+        }
+        .tilt3d > * { transform: translateZ(12px); }
+        .sStat::after {
+          content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0;
+          background: radial-gradient(circle at var(--pointer-x, 50%) var(--pointer-y, 50%), rgba(70,150,255,.13), transparent 65%);
+          transition: opacity .2s ease;
+        }
+        .sStat:hover::after { opacity: 1; }
+        .sStat::before {
+          content: ''; position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+          width: 40%; height: 2px; border-radius: 99px;
+          background: linear-gradient(90deg, transparent, rgba(60,140,255,0.5), transparent);
+        }
+        .sStat:last-child { border-right: none; }
+        .sNum { font-family:'Syne',sans-serif; font-size: 24px; font-weight: 800; color: #50d0ff; display: block; }
+        .sLbl { font-size: 10.5px; color: #3a5878; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; margin-top: 4px; display: block; }
+
+        /* ═══════════════════════════════════════════════
+           ANALYTICS DASHBOARD
+        ═══════════════════════════════════════════════ */
+        .analytics { padding: 18px 0 52px; }
+        .analyticsHeader { display: flex; justify-content: space-between; align-items: end; margin-bottom: 18px; }
+        .analyticsTag { text-align: left; margin-bottom: 7px; color: #4189db; font-size: 9px; }
+        .analyticsTitle { color: #d6e9ff; font: 800 clamp(22px,3vw,30px) 'Syne',sans-serif; letter-spacing: -.7px; }
+        .liveBadge {
+          display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px;
+          border: 1px solid rgba(50,210,155,.16); border-radius: 99px;
+          color: #6bcba9; background: rgba(24,145,105,.08); font-size: 10px; font-weight: 700;
+        }
+        .liveBadge span { width: 6px; height: 6px; border-radius: 50%; background: #40e6a2; box-shadow: 0 0 10px #40e6a2; animation: blink 2s ease-in-out infinite; }
+        .analyticsGrid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 13px; }
+        .analyticsCard {
+          min-width: 0; min-height: 158px; position: relative; overflow: hidden;
+          padding: 19px 20px; border-radius: 17px;
+          border: 1px solid rgba(55,112,205,.15);
+          background: linear-gradient(145deg, rgba(9,19,47,.88), rgba(5,11,28,.76));
+          box-shadow: 0 14px 34px rgba(0,0,0,.16), inset 0 1px rgba(255,255,255,.025);
+          transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease;
+        }
+        .analyticsCard:hover { transform: translateY(-3px); border-color: rgba(65,145,255,.3); box-shadow: 0 20px 42px rgba(0,0,0,.25), 0 0 28px rgba(35,105,255,.06); }
+        .analyticsCardTop { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: #718baa; font-size: 11px; font-weight: 600; }
+        .analyticsIcon { color: #67baff; font-size: 17px; }
+        .analyticsNumber { display: block; margin-top: 12px; color: #e7f4ff; font: 800 30px 'Syne',sans-serif; letter-spacing: -.7px; }
+        .analyticsFoot { display: block; margin-top: 2px; color: #3f5a79; font-size: 10px; }
+        .analyticsClicks { background: radial-gradient(ellipse at 95% 0%, rgba(35,120,250,.15), transparent 60%), linear-gradient(145deg, rgba(9,19,47,.92), rgba(5,11,28,.8)); }
+        .sparkline { height: 42px; position: absolute; right: 18px; bottom: 18px; display: flex; align-items: end; gap: 4px; }
+        .sparkline span { width: 5px; min-height: 4px; border-radius: 5px; background: linear-gradient(180deg,#6ad8ff,#4269f5 70%,rgba(115,65,235,.65)); transform-origin: bottom; animation: barIn .55s cubic-bezier(.2,.8,.2,1) both; }
+        @keyframes barIn { from { transform: scaleY(.1); opacity: .3; } to { transform: scaleY(1); opacity: 1; } }
+        .communityVisual { height: 38px; position: absolute; right: 18px; bottom: 17px; display: flex; align-items: end; gap: 4px; }
+        .communityVisual i { width: 7px; height: 12px; border: 1px solid rgba(112,147,255,.55); border-radius: 7px 7px 4px 4px; background: linear-gradient(180deg,rgba(125,100,255,.58),rgba(41,100,220,.1)); }
+        .communityVisual i:nth-child(2n) { height: 19px; }
+        .communityVisual i:nth-child(3n) { height: 27px; }
+        .communityVisual i:nth-child(4n) { height: 34px; border-color: rgba(97,194,255,.66); }
+        .linkVisual { height: 36px; position: absolute; right: 18px; bottom: 18px; display: flex; align-items: center; gap: 4px; }
+        .linkVisual span { width: 7px; border-radius: 8px; background: linear-gradient(180deg,#70e0ff,#5466e9); box-shadow: 0 0 9px rgba(70,150,255,.18); }
+        .linkVisual span:nth-child(1),.linkVisual span:nth-child(5) { height: 13px; opacity: .55; }
+        .linkVisual span:nth-child(2),.linkVisual span:nth-child(4) { height: 24px; opacity: .8; }
+        .linkVisual span:nth-child(3) { height: 34px; }
+        .trafficCard { grid-column: span 2; min-height: 220px; }
+        .analyticsPeriod { color: #385472; font-size: 8px; font-weight: 800; letter-spacing: 1px; }
+        .trafficChart { display: flex; align-items: stretch; justify-content: space-around; gap: 10px; height: 145px; margin-top: 13px; padding: 0 10px; }
+        .trafficDay { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+        .trafficCount { min-height: 12px; color: #70baff; font-size: 9px; font-weight: 700; }
+        .trafficTrack { flex: 1; width: 100%; display: flex; align-items: end; justify-content: center; border-bottom: 1px solid rgba(75,112,170,.15); background: linear-gradient(180deg,transparent,rgba(32,63,112,.07)); }
+        .trafficBar { width: min(24px,65%); min-height: 3px; border-radius: 7px 7px 2px 2px; background: linear-gradient(180deg,#62dfff,#4c84ff 60%,#754be4); box-shadow: 0 0 15px rgba(69,142,255,.2); transition: height .5s cubic-bezier(.2,.8,.2,1); }
+        .trafficLabel { color: #536d89; font-size: 9px; }
+        .topLinksCard { min-height: 220px; }
+        .analyticsMessage { color: #506883; font-size: 11px; line-height: 1.6; margin-top: 20px; }
+        .topLinksList { display: flex; flex-direction: column; gap: 12px; margin-top: 18px; }
+        .topLinkLabels { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; color: #7a9cbb; font-size: 10px; }
+        .topLinkLabels span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+        .topLinkLabels strong { flex: 0 0 auto; color: #69cfff; }
+        .topLinkTrack { height: 4px; overflow: hidden; border-radius: 99px; background: rgba(70,110,170,.13); }
+        .topLinkTrack span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#328dff,#9962f5); transition: width .45s ease; }
+
+        /* ═══════════════════════════════════════════════
+           TAB BAR
+        ═══════════════════════════════════════════════ */
+        .tabs {
+          display: flex; gap: 5px; width: fit-content;
+          background: rgba(6,12,32,0.7); border: 1px solid rgba(40,100,220,0.12);
+          border-radius: 14px; padding: 5px; margin-bottom: 16px;
+          animation: fadeUp .8s .32s ease both;
+        }
+        .tab {
+          padding: 9px 24px; border-radius: 10px; border: none; cursor: pointer;
+          font-family: 'Inter', sans-serif; font-size: 13.5px; font-weight: 600;
+          color: #4a6888; background: transparent; transition: all .22s;
+          display: flex; align-items: center; gap: 8px;
+        }
+        .tab.on { background: linear-gradient(135deg, #1a6aff, #7030ee); color: #fff; box-shadow: 0 4px 18px rgba(26,106,255,0.38); }
+        .tab:hover:not(.on) { color: #90b8d8; background: rgba(255,255,255,0.04); }
+        .newTag {
+          font-size: 7.5px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase;
+          background: linear-gradient(90deg, #30f0a0, #00d8c0); color: #030c1e;
+          padding: 2px 7px; border-radius: 4px;
+        }
+
+        /* ═══════════════════════════════════════════════
+           CARD
+        ═══════════════════════════════════════════════ */
+        .card {
+          border-radius: 22px; padding: 30px;
+          background: rgba(6,12,36,0.82);
+          border: 1px solid rgba(40,110,255,0.13);
+          box-shadow: 0 24px 70px rgba(0,0,0,0.4), 0 0 0 1px rgba(40,110,255,0.05);
+          backdrop-filter: blur(14px);
+          animation: fadeUp .9s .38s ease both;
+          position: relative; overflow: hidden;
+        }
+        .card::before {
+          content:''; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+          background: linear-gradient(135deg, rgba(40,110,255,0.04) 0%, transparent 60%);
+        }
+        .card::after {
+          content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0;
+          background: radial-gradient(circle at var(--pointer-x, 50%) var(--pointer-y, 50%), rgba(55,130,255,.15), transparent 58%);
+          transition: opacity .2s ease;
+        }
+        .card:hover::after { opacity: 1; }
+        .cardLabel { font-size: 10.5px; font-weight: 800; letter-spacing: 2.5px; text-transform: uppercase; color: #2e7ad8; margin-bottom: 18px; }
+        .cardTag { font-size: 9px; font-weight: 700; letter-spacing: 1px; color: #3a5070; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; }
+
+        /* Input row */
+        .inputRow { display: flex; gap: 8px; }
+        .inputWrap {
+          flex: 1; display: flex; align-items: center; gap: 10px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(60,140,255,0.16); border-radius: 13px;
+          padding: 4px 4px 4px 16px;
+          transition: border-color .22s, box-shadow .22s;
+        }
+        .inputWrap:focus-within { border-color: rgba(60,140,255,0.45); box-shadow: 0 0 0 4px rgba(40,110,255,0.1); }
+        .inputIcon { font-size: 16px; opacity: .4; flex-shrink: 0; }
+        .inputWrap input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #cde0ff; font-size: 15px; font-family: 'Inter',sans-serif; padding: 12px 0; }
+        .inputWrap input::placeholder { color: #2e4a68; }
+
+        /* Textarea */
+        .taWrap textarea {
+          width: 100%; resize: vertical; min-height: 120px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(60,140,255,0.15); border-radius: 13px;
+          padding: 14px 16px; color: #cde0ff;
+          font-size: 14px; font-family: 'Inter',sans-serif; line-height: 1.65;
+          outline: none; transition: border-color .22s, box-shadow .22s;
+        }
+        .taWrap textarea:focus { border-color: rgba(60,140,255,0.42); box-shadow: 0 0 0 4px rgba(40,110,255,0.1); }
+        .taWrap textarea::placeholder { color: #1e3850; }
+        .taMeta { display: flex; justify-content: space-between; align-items: center; margin-top: 7px; font-size: 11.5px; color: #2e4868; }
+
+        /* Buttons */
+        .btn {
+          display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+          border: none; cursor: pointer; border-radius: 10px; font-family: 'Inter',sans-serif;
+          font-weight: 700; text-decoration: none; white-space: nowrap; transition: all .2s;
+        }
+        .btnPrimary {
+          height: 48px; padding: 0 28px; font-size: 14.5px;
+          background: linear-gradient(135deg, #1a7aff, #8030f0);
+          color: #fff; box-shadow: 0 6px 24px rgba(26,122,255,0.38);
+        }
+        .btnPrimary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(26,122,255,0.55); }
+        .btnPrimary:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+        .btnGhost { height: 40px; padding: 0 18px; font-size: 13px; background: rgba(20,44,90,0.65); color: #6090c0; border: 1px solid rgba(40,90,200,0.18); }
+        .btnGhost:hover { background: rgba(30,60,120,0.8); color: #90c0e8; }
+        .btnBlue { height: 40px; padding: 0 18px; font-size: 13px; background: linear-gradient(135deg, #1a6aff, #5020d0); color: #fff; box-shadow: 0 4px 14px rgba(26,106,255,0.35); }
+        .btnBlue:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(26,106,255,0.5); }
+        .btnSm { height: 40px; padding: 0 14px; font-size: 12.5px; }
+        .btnGreen { background: rgba(15,100,60,0.7) !important; color: #30f0a0 !important; border: 1px solid rgba(30,200,100,0.2) !important; }
+        .btnActive { background: rgba(20,70,160,0.8) !important; color: #60c0ff !important; }
+        .ghostBtn { background: none; border: none; cursor: pointer; font-family: 'Inter',sans-serif; font-size: 12px; color: #2e4868; font-weight: 600; padding: 0; transition: color .2s; }
+        .ghostBtn:hover { color: #607898; }
+        .ghostBtn.red:hover { color: #ff6a80; }
+        .ghostBtn:disabled { opacity: .4; cursor: not-allowed; }
+        .arr { font-size: 17px; transition: transform .2s; }
+        .btnPrimary:hover .arr { transform: translate(3px,-3px); }
+
+        /* Spinner */
+        .spin { width: 15px; height: 15px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.25); border-top-color: #fff; display: inline-block; animation: spinAnim .65s linear infinite; }
+        @keyframes spinAnim { to { transform: rotate(360deg); } }
+
+        /* Hint */
+        .hint { font-size: 11.5px; color: #253a58; margin-top: 9px; }
+
+        /* Error */
+        .errBox { margin-top: 14px; padding: 12px 16px; background: rgba(200,40,60,0.1); border: 1px solid rgba(220,60,80,0.22); border-radius: 10px; color: #ff8a9c; font-size: 13px; animation: fadeUp .28s ease; }
+
+        /* ═══════════════════════════════════════════════
+           RESULT
+        ═══════════════════════════════════════════════ */
+        .resultBox {
+          margin-top: 20px; padding: 20px 22px;
+          background: rgba(4,10,28,0.92);
+          border: 1px solid rgba(40,200,110,0.18); border-radius: 16px;
+          box-shadow: 0 0 40px rgba(40,200,110,0.05), 0 14px 48px rgba(0,0,0,0.35);
+          animation: popIn .38s cubic-bezier(.34,1.56,.64,1);
+        }
+        @keyframes popIn { from{opacity:0;transform:translateY(12px) scale(.97)} to{opacity:1;transform:none} }
+        .rbTop { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+        .rbOk { font-size: 11.5px; font-weight: 700; color: #30f0a0; background: rgba(40,220,120,0.1); padding: 4px 11px; border-radius: 99px; border: 1px solid rgba(40,220,120,0.22); }
+        .rbX { border: none; background: rgba(255,255,255,0.07); color: #507090; width: 28px; height: 28px; border-radius: 8px; cursor: pointer; font-size: 18px; transition: background .2s; }
+        .rbX:hover { background: rgba(255,255,255,0.13); color: #fff; }
+        .rbRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .rbLink {
+          flex: 1; min-width: 160px; display: block; padding: 11px 15px; border-radius: 10px;
+          background: rgba(0,0,0,0.28); border: 1px solid rgba(255,255,255,0.07);
+          color: #50d0ff; text-decoration: none; font-size: 14px;
+          overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+          transition: border-color .2s, color .2s;
+        }
+        .rbLink:hover { color: #fff; border-color: rgba(60,180,255,0.38); }
+        .rbSrc { font-size: 11px; color: #2a4060; margin-top: 9px; }
+
+        /* QR */
+        .qrBox { margin-top: 14px; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 18px; background: rgba(2,8,24,0.7); border-radius: 14px; border: 1px solid rgba(40,100,220,0.12); animation: fadeUp .28s ease; }
+        .qrImg { width: 148px; height: 148px; border-radius: 10px; border: 1px solid rgba(40,120,255,0.2); }
+        .qrDl { color: #50d0ff; font-size: 12px; font-weight: 600; text-decoration: none; transition: color .2s; }
+        .qrDl:hover { color: #fff; }
+        .qrInline { width: 100%; margin-top: 8px; }
+
+        /* ═══════════════════════════════════════════════
+           BULK
+        ═══════════════════════════════════════════════ */
+        .progWrap { margin: 14px 0; }
+        .progBar { width: 100%; height: 5px; background: rgba(255,255,255,0.07); border-radius: 99px; overflow: hidden; margin-bottom: 6px; }
+        .progFill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, #1a7aff, #8030f0); transition: width .3s ease; }
+        .progLbl { font-size: 11px; color: #50d0ff; font-weight: 600; }
+        .bulkBtns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+        .bulkList { margin-top: 20px; display: flex; flex-direction: column; gap: 8px; }
+        .bulkListHdr { font-size: 11px; color: #304060; font-weight: 700; padding-bottom: 8px; border-bottom: 1px solid rgba(40,100,220,0.1); }
+        .bulkRow { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 10px 14px; border-radius: 11px; background: rgba(255,255,255,0.025); border: 1px solid rgba(40,100,220,0.08); transition: border-color .2s; }
+        .bulkRow:hover { border-color: rgba(40,100,220,0.22); }
+        .bulkOk { border-left: 3px solid rgba(40,220,120,0.38); }
+        .bulkErr { border-left: 3px solid rgba(220,60,80,0.38); }
+        .brDomain { flex: 0 0 130px; font-size: 12px; color: #4a6888; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+        .brShort { flex: 1; min-width: 0; font-size: 13px; color: #50d0ff; text-decoration: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+        .brShort:hover { color: #fff; }
+        .brErr { font-size: 12px; color: #ff7080; }
+
+        /* ═══════════════════════════════════════════════
+           FEATURES
+        ═══════════════════════════════════════════════ */
+        .feats { padding: 70px 0 50px; animation: fadeUp 1s .5s ease both; }
+        .sectTag { text-align: center; font-size: 11px; font-weight: 800; letter-spacing: 3px; color: #244060; text-transform: uppercase; margin-bottom: 10px; }
+        .sectTitle { text-align: center; font-family: 'Syne',sans-serif; font-size: clamp(26px,3.5vw,42px); font-weight: 800; color: #c8e0f0; margin-bottom: 44px; letter-spacing: -1px; }
+        .featsGrid { display: grid; grid-template-columns: repeat(auto-fit,minmax(200px,1fr)); gap: 14px; }
+        .featCard {
+          padding: 26px; border-radius: 18px;
+          background: rgba(6,12,36,0.7); border: 1px solid rgba(40,100,220,0.1);
+          transition: transform .18s ease-out, border-color .25s, box-shadow .25s;
+          position: relative; overflow: hidden;
+        }
+        .featCard::before {
+          content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0;
+          background: radial-gradient(circle at var(--pointer-x, 50%) var(--pointer-y, 50%), rgba(65,135,255,.16), transparent 60%);
+          transition: opacity .2s ease;
+        }
+        .featCard:hover::before { opacity: 1; }
+        .featCard::after {
+          content:''; position:absolute; inset:0; border-radius:inherit;
+          background: linear-gradient(135deg, rgba(40,110,255,0.04) 0%, transparent 55%);
+          pointer-events:none;
+        }
+        .featCard:hover { border-color: rgba(60,140,255,0.3); box-shadow: 0 20px 50px rgba(0,0,0,0.35), 0 0 0 1px rgba(40,110,255,0.08); }
+        .featIco { font-size: 30px; margin-bottom: 14px; display: block; filter: drop-shadow(0 0 14px rgba(60,160,255,0.5)); }
+        .featName { font-size: 15px; font-weight: 700; color: #b8d8f0; margin-bottom: 8px; }
+        .featDesc { font-size: 12.5px; color: #3a5878; line-height: 1.6; }
+
+        /* ═══════════════════════════════════════════════
+           HISTORY
+        ═══════════════════════════════════════════════ */
+        .histSec { padding: 44px 0; }
+        .histHdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+        .histTitle { font-family: 'Syne',sans-serif; font-size: 20px; font-weight: 800; color: #a0c0e0; letter-spacing: -0.5px; }
+        .histEmpty { padding: 18px 20px; border-radius: 13px; border: 1px solid rgba(40,100,220,0.09); background: rgba(6,12,36,0.45); color: #3a5878; font-size: 13px; }
+        .histRow { display: flex; align-items: center; gap: 10px; padding: 13px 18px; border-radius: 13px; background: rgba(6,12,36,0.65); border: 1px solid rgba(40,100,220,0.09); margin-bottom: 8px; transition: border-color .2s; }
+        .histRow:hover { border-color: rgba(40,100,220,0.22); }
+        .histLeft { flex: 1; min-width: 0; }
+        .histDomain { font-size: 13.5px; font-weight: 600; color: #6090b8; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+        .histTime { font-size: 10.5px; color: #1e3050; margin-top: 2px; }
+        .histCode { flex: 0 0 auto; font-size: 12.5px; color: #50d0ff; text-decoration: none; padding: 5px 12px; border-radius: 8px; background: rgba(0,0,0,0.25); font-weight: 600; transition: color .2s; }
+        .histCode:hover { color: #fff; }
+
+        /* ═══════════════════════════════════════════════
+           FOOTER
+        ═══════════════════════════════════════════════ */
+        .footer { padding: 32px 0 26px; border-top: 1px solid rgba(40,100,220,0.08); text-align: center; }
+        .footerTxt { font-size: 12.5px; color: #1e3050; }
+        .heart { color: #f06080; }
+        .footerNav { display: flex; gap: 22px; justify-content: center; margin-top: 9px; }
+        .footerNav a { font-size: 11.5px; color: #1e3050; text-decoration: none; transition: color .2s; }
+        .footerNav a:hover { color: #50d0ff; }
+
+        /* ── Account dialog ── */
+        .authBackdrop {
+          position: fixed; inset: 0; z-index: 500; display: grid; place-items: center;
+          padding: 20px; background: rgba(1,5,14,0.78); backdrop-filter: blur(12px);
+          animation: fadeUp .2s ease both;
+        }
+        .authDialog {
+          width: min(100%, 430px); padding: 36px; border-radius: 24px; position: relative;
+          background: linear-gradient(145deg, rgba(10,22,52,.98), rgba(5,10,26,.99));
+          border: 1px solid rgba(70,140,255,.24);
+          box-shadow: 0 32px 100px rgba(0,0,0,.65), 0 0 55px rgba(35,100,255,.12);
+        }
+        .authClose {
+          position: absolute; top: 16px; right: 18px; border: 0; background: transparent;
+          color: #7893b3; font-size: 27px; cursor: pointer;
+        }
+        .authClose:hover { color: #fff; }
+        .authIcon {
+          width: 48px; height: 48px; display: grid; place-items: center; margin-bottom: 20px;
+          border-radius: 15px; font-size: 22px;
+          background: linear-gradient(135deg, rgba(35,120,255,.25), rgba(130,55,230,.25));
+          border: 1px solid rgba(90,150,255,.2);
+        }
+        .authEyebrow { color: #64baff; font-size: 10px; font-weight: 800; letter-spacing: 2px; margin-bottom: 8px; }
+        .authDialog h2 { color: #f2f7ff; font: 800 27px 'Syne',sans-serif; }
+        .authIntro { margin-top: 8px; color: #718baa; font-size: 13px; line-height: 1.6; }
+        .authNotice { margin-top: 14px; padding: 12px 14px; border: 1px solid rgba(48,200,145,.2); border-radius: 10px; background: rgba(28,150,105,.09); color: #82d8b7; font-size: 12px; line-height: 1.6; }
+        .authForm { display: flex; flex-direction: column; margin-top: 24px; }
+        .authForm label { margin: 14px 0 8px; color: #9ab4d1; font-size: 12px; font-weight: 600; }
+        .authForm input {
+          width: 100%; padding: 13px 14px; border-radius: 11px; outline: none;
+          border: 1px solid rgba(70,130,220,.2); background: rgba(255,255,255,.045);
+          color: #e2efff; font: 14px 'Inter',sans-serif;
+        }
+        .authForm input:focus { border-color: rgba(70,150,255,.6); box-shadow: 0 0 0 3px rgba(40,110,255,.12); }
+        .authForm input::placeholder { color: #3c5573; }
+        .authSubmit { width: 100%; margin-top: 22px; }
+        .authSwitch { margin-top: 20px; text-align: center; color: #637f9f; font-size: 12px; }
+        .authSwitch button { border: 0; background: none; color: #6bbaff; font: 700 12px 'Inter',sans-serif; cursor: pointer; }
+        .authSwitch button:hover { color: #b9e2ff; }
+
+        /* ═══════════════════════════════════════════════
+           KEYFRAMES
+        ═══════════════════════════════════════════════ */
+        @keyframes fadeUp { from{opacity:0;transform:translateY(22px)} to{opacity:1;transform:none} }
+        @keyframes fadeRight { from{opacity:0;transform:translateX(32px)} to{opacity:1;transform:none} }
+
+        /* ═══════════════════════════════════════════════
+           RESPONSIVE
+        ═══════════════════════════════════════════════ */
+        @media(max-width:900px) {
+          .hero { flex-direction: column; padding: 52px 0 40px; gap: 32px; }
+          .hcWrap { display: none; }
+          .sStat { padding: 14px 8px; }
+          .sNum { font-size: 20px; }
+        }
+        @media(max-width:640px) {
+          .nav { padding: 0 18px; }
+          .navLinks { gap: 10px; }
+          .navUser { display: none; }
+          .wrap { padding: 0 16px; }
+          .hero { padding: 38px 0 28px; }
+          .heroH1 { letter-spacing: -2px; }
+          .statsStrip { flex-wrap: wrap; }
+          .sStat { flex: 0 0 50%; border-bottom: 1px solid rgba(40,100,220,0.1); }
+          .card { padding: 20px 16px; }
+          .inputRow { flex-direction: column; }
+          .btnPrimary { width: 100%; }
+          .rbRow { flex-direction: column; }
+          .rbLink { min-width: unset; }
+          .rbRow .btn { width: 100%; }
+          .bulkBtns { flex-direction: column; }
+          .bulkBtns .btn { width: 100%; }
+          .brDomain { flex: 0 0 100%; }
+          .tab { padding: 8px 16px; font-size: 12.5px; }
+          .analytics { padding: 8px 0 35px; }
+          .analyticsGrid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px; }
+          .analyticsCard { padding: 16px 14px; }
+          .analyticsNumber { font-size: 26px; }
+          .trafficCard { grid-column: span 2; }
+          .topLinksCard { grid-column: span 2; min-height: 170px; }
+        }
+        @media(max-width:400px) {
+          .navLinks a:not(.navCta) { display: none; }
+          .navAuth { padding: 7px 9px; font-size: 11px; }
+          .heroH1 { font-size: 38px; }
+          .authDialog { padding: 30px 22px; }
+          .analyticsGrid { grid-template-columns: 1fr 1fr; }
+          .analyticsCard { min-height: 145px; }
+          .trafficCard,.topLinksCard { grid-column: span 2; }
+          .trafficChart { gap: 5px; padding: 0 2px; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .tilt3d { transform: none !important; transition: none !important; will-change: auto; }
+          .analyticsCard,.trafficBar,.topLinkTrack span { transition: none !important; }
+          .sparkline span { animation: none !important; }
+        }
+      `}</style>
+
+      {/* ── BG layers ── */}
+      <div className="bgRoot" />
+      <div className="bgMesh" />
+      <div className="orb orb1" />
+      <div className="orb orb2" />
+      <div className="orb orb3" />
+      <ParticleCanvas />
+
+      {/* ── Navbar ── */}
+      <nav className="nav">
+        <a href="/" className="navBrand">
+          <div className="navLogo">🔗</div>
+          LinkSnip
+        </a>
+        <div className="navLinks">
+          <a href="#features">Features</a>
+          <a href="#history">History</a>
+          {user
+            ? <><span className="navUser" title={user.email}>{user.email}</span><button className="navAuth" onClick={signOut}>Sign out</button></>
+            : <button className="navAuth" onClick={() => { setAuthNotice(""); setAuthOpen(true); }}>Sign in</button>}
+          <a href="#single-url-input" className="navCta">Try Now ↗</a>
+        </div>
+      </nav>
+
+      {/* ── App root ── */}
+      <div className="appRoot" ref={interactiveRef}>
+        <div className="wrap">
+
+          {/* ── Hero ── */}
+          <section className="hero">
+            <div className="heroLeft">
+              <div className="pill">
+                <div className="pillDot" />
+                AI-Powered · Free · Account optional
+              </div>
+              <h1 className="heroH1">
+                Short links.<br />
+                <span className="line2">Big possibilities.</span>
+              </h1>
+              <p className="heroSub">
+                Turn long, messy URLs into clean, memorable links in one click.
+                Now with <strong>bulk mode</strong> — shorten up to 20 URLs at once,
+                export CSV, and generate QR codes instantly.
+              </p>
+              <div className="heroChips">
+                <span className="chip">⚡ Instant</span>
+                <span className="chip">📦 Bulk ready</span>
+                <span className="chip">📱 QR codes</span>
+                <span className="chip">🕐 History saved</span>
+              </div>
+            </div>
+            <HeroCard />
+          </section>
+
+          {/* ── Stats strip ── */}
+          <div className="statsStrip">
+            {[
+              { n: stats ? stats.total_links.toLocaleString() : "—", l: "Links created" },
+              { n: stats ? stats.total_clicks.toLocaleString() : "—", l: "Total clicks" },
+              { n: history.length, l: "Your Links" },
+              { n: stats ? stats.total_users.toLocaleString() : "—", l: "Users" },
+            ].map((s, i) => (
+              <div className="sStat tilt3d" key={i}>
+                <span className="sNum">{s.n}</span>
+                <span className="sLbl">{s.l}</span>
+              </div>
+            ))}
+          </div>
+
+          <StatsPanel stats={stats} error={statsError} />
+
+          {/* ── Tabs ── */}
+          <div className="tabs" role="tablist">
+            {[["single", "Single URL", false], ["bulk", "Bulk URLs", true]].map(([k, lbl, isNew]) => (
+              <button key={k} role="tab" aria-selected={tab === k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)} id={`tab-${k}`}>
+                {lbl}{isNew && <span className="newTag">NEW</span>}
+              </button>
+            ))}
+          </div>
+
+          {/* ── Shortener ── */}
+          {tab === "single" ? <Single onNew={addToHistory} token={token} /> : <Bulk onNew={addToHistory} token={token} />}
+
+          {/* ── History ── */}
+          <History history={history} onClear={clearHistory} canClear={!user} />
+
+          {/* ── Features ── */}
+          <section className="feats" id="features">
+            <div className="sectTag">Why LinkSnip?</div>
+            <h2 className="sectTitle">Packed with everything you need</h2>
+            <div className="featsGrid">
+              {[
+                { i: "⚡", n: "Instant Shortening", d: "Links are created in milliseconds — no queues, no delays." },
+                { i: "📦", n: "Bulk Mode", d: "Paste up to 20 URLs at once. Progress bar + CSV export included." },
+                { i: "📱", n: "QR Codes", d: "Every link gets a QR code, ready to scan or download." },
+                { i: "🕐", n: "Synced Link History", d: "Sign in to see links saved to your account across devices." },
+                { i: "🔒", n: "Secure Accounts", d: "Passwords are securely hashed, and sessions can be revoked at sign-out." },
+                { i: "🌐", n: "Always On", d: "Backend hosted on Render — fast global redirects 24/7." },
+              ].map((f, i) => (
+                <div className="featCard tilt3d" key={i}>
+                  <span className="featIco">{f.i}</span>
+                  <div className="featName">{f.n}</div>
+                  <div className="featDesc">{f.d}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {/* ── Footer ── */}
+          <footer className="footer">
+            <div className="footerTxt">Built with <span className="heart">♥</span> · LinkSnip-AI — Free URL Shortener</div>
+            <nav className="footerNav">
+              <a href="#features">Features</a>
+              <a href="#history">History</a>
+              <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
+            </nav>
+          </footer>
+
+        </div>
+      </div>
+      {authOpen && <AuthDialog onClose={() => setAuthOpen(false)} onAuthenticated={handleAuthenticated} initialNotice={authNotice} />}
+    </>
+  );
+}
