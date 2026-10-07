@@ -218,19 +218,23 @@ def send_verification_email(email: str, token: str) -> None:
     )
 
     context = ssl.create_default_context()
-    if port == 465:
-        with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as smtp:
-            if username:
-                smtp.login(username, password)
-            smtp.send_message(message)
-    else:
-        with smtplib.SMTP(host, port, timeout=15) as smtp:
-            smtp.ehlo()
-            smtp.starttls(context=context)
-            smtp.ehlo()
-            if username:
-                smtp.login(username, password)
-            smtp.send_message(message)
+    try:
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as smtp:
+                if username and password:
+                    smtp.login(username, password)
+                smtp.send_message(message)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as smtp:
+                smtp.ehlo()
+                smtp.starttls(context=context)
+                smtp.ehlo()
+                if username and password:
+                    smtp.login(username, password)
+                smtp.send_message(message)
+    except Exception as exc:
+        logger.error("Failed sending email via %s:%s for %s: %s", host, port, email, exc)
+        raise
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
