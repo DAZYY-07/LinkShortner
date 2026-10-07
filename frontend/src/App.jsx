@@ -248,7 +248,8 @@ function Bulk({ onNew, token }) {
   const copyOne = async (i) => { await navigator.clipboard.writeText(results[i].short); setCopiedIdx(i); setTimeout(() => setCopiedIdx(null), 1800); };
   const copyAll = () => navigator.clipboard.writeText(results.filter(r => r.ok).map(r => `${r.original} → ${r.short}`).join("\n"));
   const csv = () => {
-    const rows = ["Original,Short,Status", ...results.map(r => r.ok ? `"${r.original}","${r.short}","OK"` : `"${r.original}","","${r.error}"`)];
+    const cell = (value) => `"${String(value).replace(/"/g, '""')}"`;
+    const rows = ["Original,Short,Status", ...results.map(r => [r.original, r.ok ? r.short : "", r.ok ? "OK" : r.error].map(cell).join(","))];
     const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([rows.join("\n")], { type: "text/csv" })), download: "links.csv" }); a.click();
   };
   const cnt = parse(text).length;
@@ -572,7 +573,7 @@ function AuthDialog({ onClose, onAuthenticated, initialNotice }) {
         <p className="authSwitch">
           {mode === "verification" ? "Already verified?" : mode === "login" ? "New to LinkShortener?" : "Already have an account?"}
           {" "}
-          <button type="button" onClick={() => { setMode(mode === "register" ? "login" : "register"); setError(""); setNotice(""); }}>
+          <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); setNotice(""); }}>
             {mode === "verification" || mode === "register" ? "Sign in" : "Create account"}
           </button>
         </p>
@@ -591,6 +592,8 @@ export default function App() {
   const [history, setHistory] = useState(getHistory);
   const [token, setToken] = useState(() => localStorage.getItem("ls_token") || "");
   const [user, setUser] = useState(null);
+  const tokenRef = useRef(token);
+  useEffect(() => { tokenRef.current = token; }, [token]);
   const [authOpen, setAuthOpen] = useState(() => new URLSearchParams(window.location.search).get("verified") === "1");
   const [authNotice, setAuthNotice] = useState(() => (
     new URLSearchParams(window.location.search).get("verified") === "1"
@@ -613,7 +616,8 @@ export default function App() {
   }, [theme]);
   const addToHistory = useCallback((entry) => {
     setStatsVersion(version => version + 1);
-    setHistory(prev => { const n = [entry, ...prev.filter(h => h.short !== entry.short)]; saveHistory(n); return n; });
+    // Account links are synced from the server; only guest history belongs in localStorage.
+    setHistory(prev => { const n = [entry, ...prev.filter(h => h.short !== entry.short)]; if (!tokenRef.current) saveHistory(n); return n; });
   }, []);
   const clearHistory = () => { setHistory([]); localStorage.removeItem("ls_history"); };
   useEffect(() => {

@@ -53,10 +53,13 @@ app.add_middleware(
 # --------------------------------------------------
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./links.db")
+# Render and Heroku hand out "postgres://" URLs, which SQLAlchemy no longer accepts.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False}
+    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
 )
 
 SessionLocal = sessionmaker(
@@ -129,7 +132,7 @@ with engine.begin() as connection:
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
     if "is_verified" not in user_columns:
         connection.exec_driver_sql(
-            "ALTER TABLE users ADD COLUMN is_verified BOOLEAN NOT NULL DEFAULT 0"
+            "ALTER TABLE users ADD COLUMN is_verified BOOLEAN NOT NULL DEFAULT FALSE"
         )
     if "user_id" not in link_columns:
         connection.exec_driver_sql(
