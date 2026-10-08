@@ -92,23 +92,19 @@ function ParticleCanvas() {
     const canvas = ref.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    let W, H, pts = [], raf;
-    const resize = () => { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; };
-    resize();
-    window.addEventListener("resize", resize);
-    for (let i = 0; i < 90; i++) {
-      pts.push({
-        x: Math.random() * W, y: Math.random() * H,
-        r: Math.random() * 1.4 + 0.3,
-        dx: (Math.random() - 0.5) * 0.28, dy: (Math.random() - 0.5) * 0.28,
-        a: Math.random() * 0.5 + 0.1,
-        hue: [210, 240, 270][Math.floor(Math.random() * 3)],
-      });
-    }
-    const draw = () => {
+    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let W = 0, H = 0, pts = [], raf = 0;
+    const particle = () => ({
+      x: Math.random() * W, y: Math.random() * H,
+      r: Math.random() * 1.4 + 0.3,
+      dx: (Math.random() - 0.5) * 0.28, dy: (Math.random() - 0.5) * 0.28,
+      a: Math.random() * 0.5 + 0.1,
+      hue: [210, 240, 270][Math.floor(Math.random() * 3)],
+    });
+    const frame = (move) => {
       ctx.clearRect(0, 0, W, H);
       pts.forEach(p => {
-        p.x = (p.x + p.dx + W) % W; p.y = (p.y + p.dy + H) % H;
+        if (move) { p.x = (p.x + p.dx + W) % W; p.y = (p.y + p.dy + H) % H; }
         ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
         ctx.fillStyle = `hsla(${p.hue},100%,78%,${p.a})`; ctx.fill();
       });
@@ -119,10 +115,34 @@ function ParticleCanvas() {
           ctx.strokeStyle = `rgba(80,180,255,${0.07 * (1 - d / 120)})`; ctx.lineWidth = 0.6; ctx.stroke();
         }
       }
-      raf = requestAnimationFrame(draw);
     };
-    draw();
-    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
+    const loop = () => { frame(true); raf = requestAnimationFrame(loop); };
+    const start = () => {
+      cancelAnimationFrame(raf);
+      // Reduced motion: one still frame instead of a constant animation.
+      if (motionQuery.matches) frame(false); else loop();
+    };
+    const resize = () => {
+      // Draw at device resolution (capped at 2x) so dots stay sharp on high-DPI screens.
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = window.innerWidth; H = window.innerHeight;
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // Scale the particle count with screen area: ~24 on phones, up to 90 on desktops.
+      // Only reseed when the count changes, so a mobile address bar showing/hiding doesn't reshuffle them.
+      const count = Math.round(Math.min(90, Math.max(24, (W * H) / 16000)));
+      if (count !== pts.length) pts = Array.from({ length: count }, particle);
+      if (motionQuery.matches) frame(false);
+    };
+    resize();
+    start();
+    window.addEventListener("resize", resize);
+    motionQuery.addEventListener("change", start);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", resize);
+      motionQuery.removeEventListener("change", start);
+    };
   }, []);
   return <canvas ref={ref} style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }} />;
 }
@@ -662,7 +682,19 @@ function AuthDialog({ onClose, onAuthenticated, initialNotice, initialMode = "lo
 /* ─── Main App ────────────────────────────────────────────── */
 export default function App() {
   const interactiveRef = useRef(null);
-  const [theme, setTheme] = useState(() => localStorage.getItem("ls_theme") === "light" ? "light" : "dark");
+  // A saved choice wins; otherwise start from the device's light/dark setting.
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem("ls_theme");
+      if (saved === "light" || saved === "dark") return saved;
+    } catch { /* storage unavailable */ }
+    return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  });
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    try { localStorage.setItem("ls_theme", next); } catch { /* storage unavailable */ }
+  };
   const [shortRedirectCode] = useState(() => new URLSearchParams(window.location.search).get("r") || "");
   const [redirectError, setRedirectError] = useState("");
   const [tab, setTab] = useState("single");
@@ -688,7 +720,8 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
-    localStorage.setItem("ls_theme", theme);
+    // Match the mobile browser's address bar to the page.
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#f4f7fc" : "#050916");
     if (theme === "light") {
       const headline = document.querySelector(".hero3dText");
       headline?.style.removeProperty("transform");
@@ -696,6 +729,16 @@ export default function App() {
       headline?.style.removeProperty("text-shadow");
     }
   }, [theme]);
+  useEffect(() => {
+    // Follow live changes to the device theme until the user picks one with the toggle.
+    const query = window.matchMedia("(prefers-color-scheme: light)");
+    const follow = (event) => {
+      try { if (localStorage.getItem("ls_theme")) return; } catch { /* storage unavailable */ }
+      setTheme(event.matches ? "light" : "dark");
+    };
+    query.addEventListener("change", follow);
+    return () => query.removeEventListener("change", follow);
+  }, []);
   const addToHistory = useCallback((entry) => {
     setStatsVersion(version => version + 1);
     // Account links are synced from the server; only guest history belongs in localStorage.
@@ -1779,6 +1822,48 @@ export default function App() {
           .authBackdrop { align-items: start; overflow-y: auto; padding: 12px; }
           .authDialog { max-height: calc(100dvh - 24px); overflow-y: auto; }
         }
+
+        /* Narrow phones down to 280px (folded Galaxy Fold): inputs and the campaign panel must
+           shrink below the browser's default input width, and the summary text may wrap. */
+        @media (max-width: 640px) {
+          .inputWrap { flex: 0 0 auto; width: 100%; }
+          .inputWrap input { width: 100%; }
+          .campaignPanel { width: 100%; }
+          .campaignPanel summary { flex-wrap: wrap; row-gap: 2px; }
+        }
+        @media (max-width: 340px) {
+          /* Small enough that "possibilities." fits on one line instead of breaking mid-word. */
+          .heroH1 { font-size: 10vw; letter-spacing: -1.5px; }
+        }
+        @media (max-width: 300px) {
+          .navBrand { font-size: 11px; gap: 4px; }
+          .navLogo { width: 26px; height: 26px; flex-basis: 26px; font-size: 13px; }
+          .navLinks { gap: 4px; }
+          .navAuth { padding: 6px 7px; font-size: 11px; }
+          .navTheme { min-width: 36px; padding: 0 6px; }
+        }
+
+        /* Large screens: line the nav up with the content column, then scale the whole page up
+           so 2K/4K monitors don't show a small strip in the middle. */
+        @media (min-width: 641px) {
+          .nav {
+            padding-left: max(6%, calc((100% - 1120px) / 2 + 28px));
+            padding-right: max(6%, calc((100% - 1120px) / 2 + 28px));
+          }
+        }
+        @media (min-width: 1800px) { body { zoom: 1.15; } }
+        @media (min-width: 2200px) { body { zoom: 1.35; } }
+        @media (min-width: 3000px) { body { zoom: 1.8; } }
+
+        /* Reduced motion: stop every animation and transition, not only the tilt effects. */
+        @media (prefers-reduced-motion: reduce) {
+          html { scroll-behavior: auto; }
+          *, *::before, *::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+          }
+        }
       `}</style>
 
       {/* ── BG layers ── */}
@@ -1801,7 +1886,7 @@ export default function App() {
           {user
             ? <><span className="navUser" title={user.email}>{user.email}</span><button className="navAuth" onClick={signOut}>Sign out</button></>
             : <button className="navAuth" onClick={() => { setAuthNotice(""); setAuthMode("login"); setAuthOpen(true); }}>Sign in</button>}
-          <button className="navTheme" type="button" onClick={() => setTheme(current => current === "dark" ? "light" : "dark")} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-pressed={theme === "light"}>
+          <button className="navTheme" type="button" onClick={toggleTheme} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-pressed={theme === "light"}>
             {theme === "dark" ? "☀" : "☾"}<span className="navThemeLabel">{theme === "dark" ? "Light" : "Dark"}</span>
           </button>
           <a href="#single-url-input" className="navCta">Try Now ↗</a>
