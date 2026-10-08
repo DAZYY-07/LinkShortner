@@ -1,8 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-
-const API = import.meta.env.VITE_API_URL !== undefined && import.meta.env.VITE_API_URL !== ""
-  ? import.meta.env.VITE_API_URL
-  : (import.meta.env.DEV ? "" : "https://linkshortner-backend-uwgj.onrender.com");
+import { API, apiRequest, downloadQr, errorMessage, qrUrl, requestHeaders, saveBlob } from "./api.js";
+import GuestQuota from "./GuestQuota.jsx";
+import LinkOptionsFields from "./LinkOptions.jsx";
+import { EMPTY_OPTIONS, optionsToPayload } from "./linkOptions.js";
+import MyLinks from "./MyLinks.jsx";
+import RedirectPage from "./RedirectPage.jsx";
 
 /* ─── Helpers ─────────────────────────────────────────────── */
 function getHistory() {
@@ -33,9 +35,6 @@ function campaignUrlFor(value, campaign) {
   }
   return destination.toString();
 }
-function qrUrl(text) {
-  return `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(text)}&bgcolor=050916&color=60d0ff&margin=12`;
-}
 function setHeroTextHover(element, active) {
   if (!active) {
     if (document.documentElement.dataset.theme === "light") {
@@ -65,24 +64,6 @@ function setHeroTextHover(element, active) {
     : "perspective(700px) rotateX(0deg) translateY(-5px) scale(1.025)";
   element.style.filter = "brightness(1.16)";
   element.style.textShadow = "0 1px 0 #58a8e4, 0 2px 0 #347fbd, 0 4px 0 #205e99, 0 6px 0 rgba(16,44,78,.72), 0 13px 24px rgba(35,143,255,.42)";
-}
-async function downloadQr(text) {
-  // The QR image is cross-origin, so the <a download> attribute is ignored; fetch it as a blob instead.
-  try {
-    const response = await fetch(qrUrl(text));
-    if (!response.ok) throw new Error("QR download failed");
-    const href = URL.createObjectURL(await response.blob());
-    Object.assign(document.createElement("a"), { href, download: "qr.png" }).click();
-    setTimeout(() => URL.revokeObjectURL(href), 1000);
-  } catch {
-    window.open(qrUrl(text), "_blank", "noopener");
-  }
-}
-function requestHeaders(token, json = false) {
-  return {
-    ...(json ? { "Content-Type": "application/json" } : {}),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
 }
 
 /* ─── Particle Canvas ─────────────────────────────────────── */
@@ -184,11 +165,13 @@ function HeroCard() {
 }
 
 /* ─── Single shortener ────────────────────────────────────── */
-function Single({ onNew, token }) {
+function Single({ onNew, token, quota, onQuota, onSignIn }) {
   const [url, setUrl] = useState(""); const [res, setRes] = useState(null);
   const [loading, setLoading] = useState(false); const [copied, setCopied] = useState(false);
   const [err, setErr] = useState(""); const [qr, setQr] = useState(false);
   const [campaign, setCampaign] = useState({ source: "", medium: "", name: "", content: "", term: "" });
+  const [options, setOptions] = useState(EMPTY_OPTIONS);
+  const outOfFreeLinks = !token && Boolean(quota) && quota.remaining <= 0;
   const submit = async (e) => {
     e.preventDefault(); const t = url.trim();
     if (!t) { setErr("Please enter a URL."); return; }
@@ -196,11 +179,15 @@ function Single({ onNew, token }) {
     setLoading(true); setErr(""); setRes(null); setCopied(false); setQr(false);
     try {
       const destination = campaignUrlFor(t, campaign);
-      const r = await fetch(`${API}/shorten`, { method: "POST", headers: requestHeaders(token, true), body: JSON.stringify({ url: destination }) });
+      const body = { url: destination, ...(token ? optionsToPayload(options) : {}) };
+      const r = await fetch(`${API}/shorten`, { method: "POST", headers: requestHeaders(token, true), body: JSON.stringify(body) });
       const d = await r.json();
+      if (r.status === 403 && d.code === "guest_limit") { onQuota({ limit: d.limit, used: d.used, remaining: 0 }); return; }
       if (!r.ok) throw new Error(d.detail || "Failed");
+      if (!token && d.guest_limit != null) onQuota({ limit: d.guest_limit, used: d.guest_limit - d.guest_remaining, remaining: d.guest_remaining });
       const entry = { original: destination, short: d.short_url, code: d.short_code, ts: Date.now() };
       setRes(entry); onNew(entry);
+      if (token) setOptions(EMPTY_OPTIONS);
     } catch (e2) { setErr(e2.message); }
     finally { setLoading(false); }
   };
@@ -212,12 +199,13 @@ function Single({ onNew, token }) {
   return (
     <div className="card tilt3d">
       <div className="cardLabel">Single URL</div>
+      {!token && <GuestQuota quota={quota} onSignIn={onSignIn} />}
       <form className="inputRow" onSubmit={submit}>
         <div className="inputWrap">
           <span className="inputIcon">🔗</span>
           <input id="single-url-input" type="url" value={url} onChange={e => { setUrl(e.target.value); setErr(""); }} placeholder="Paste your long URL here…" autoComplete="off" />
         </div>
-        <button type="submit" className="btn btnPrimary" disabled={loading} id="single-shorten-btn">
+        <button type="submit" className="btn btnPrimary" disabled={loading || outOfFreeLinks} id="single-shorten-btn">
           {loading ? <><span className="spin" /> <span role="status">Shortening…</span></> : <><span>Shorten</span><span className="arr">↗</span></>}
         </button>
         <details className="campaignPanel">
@@ -231,8 +219,16 @@ function Single({ onNew, token }) {
             <label>Term<input value={campaign.term} onChange={updateCampaign("term")} placeholder="optional keyword" autoComplete="off" /></label>
           </div>
         </details>
+        {token && (
+          <details className="campaignPanel" id="link-options">
+            <summary>Link options <span>Alias, expiry, password, tags…</span></summary>
+            <p className="campaignHelp">Customise this link. Everything here is optional.</p>
+            <LinkOptionsFields values={options} onChange={setOptions} idPrefix="new" />
+          </details>
+        )}
       </form>
       <p className="hint">Each account or guest network can shorten the same URL up to 5 times.</p>
+      {!token && <p className="hint">Sign in for custom aliases, expiry dates, passwords, tags and click analytics.</p>}
       {err && <div className="errBox" role="alert">⚠ {err}</div>}
       {res && (
         <div className="resultBox" id="single-result">
@@ -252,11 +248,13 @@ function Single({ onNew, token }) {
 }
 
 /* ─── Bulk shortener ──────────────────────────────────────── */
-function Bulk({ onNew, token }) {
+function Bulk({ onNew, token, quota, onQuota, onSignIn }) {
   const [text, setText] = useState(""); const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false); const [prog, setProg] = useState(0);
   const [copiedIdx, setCopiedIdx] = useState(null); const [err, setErr] = useState("");
   const [qrIdx, setQrIdx] = useState(null);
+  const fileRef = useRef(null);
+  const outOfFreeLinks = !token && Boolean(quota) && quota.remaining <= 0;
   const parse = (s) => s.split(/[\n,]+/).map(x => x.trim()).filter(Boolean);
   const submit = async () => {
     const urls = parse(text);
@@ -264,12 +262,23 @@ function Bulk({ onNew, token }) {
     if (urls.length > 20) { setErr("Max 20 URLs at once."); return; }
     const bad = urls.filter(u => !/^https?:\/\//i.test(u));
     if (bad.length) { setErr(`Invalid: ${bad.slice(0, 2).join(", ")}`); return; }
+    if (!token && quota && urls.length > quota.remaining) {
+      setErr(`You have ${quota.remaining} free link${quota.remaining === 1 ? "" : "s"} left but pasted ${urls.length} URLs. Remove some, or sign in for unlimited links.`);
+      return;
+    }
     setLoading(true); setErr(""); setResults([]); setProg(0);
     const out = [];
     for (let i = 0; i < urls.length; i++) {
       try {
         const r = await fetch(`${API}/shorten`, { method: "POST", headers: requestHeaders(token, true), body: JSON.stringify({ url: urls[i] }) });
         const d = await r.json();
+        if (r.status === 403 && d.code === "guest_limit") {
+          onQuota({ limit: d.limit, used: d.used, remaining: 0 });
+          for (let rest = i; rest < urls.length; rest++) out.push({ original: urls[rest], error: "Free link limit reached. Sign in to continue.", ok: false });
+          setProg(100); setResults([...out]);
+          break;
+        }
+        if (r.ok && !token && d.guest_limit != null) onQuota({ limit: d.guest_limit, used: d.guest_limit - d.guest_remaining, remaining: d.guest_remaining });
         const e = r.ok ? { original: urls[i], short: d.short_url, code: d.short_code, ts: Date.now(), ok: true } : { original: urls[i], error: d.detail || "Failed", ok: false };
         out.push(e); if (e.ok) onNew(e);
       } catch { out.push({ original: urls[i], error: "Network error", ok: false }); }
@@ -277,6 +286,24 @@ function Bulk({ onNew, token }) {
     }
     setLoading(false);
   };
+  const importCsv = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 250_000) { setErr("That file is too large. Keep it under 250 KB (up to 100 rows)."); return; }
+    setLoading(true); setErr(""); setResults([]); setProg(30);
+    const result = await apiRequest("/my-links/import", { token, method: "POST", body: { csv: await file.text() } });
+    setLoading(false); setProg(100);
+    if (!result.ok) { setErr(errorMessage(result, "The upload failed.")); return; }
+    const out = result.data.results.map(row => row.ok
+      ? { original: row.original_url, short: row.short_url, code: row.short_code, ts: Date.now(), ok: true }
+      : { original: row.original_url, error: row.error, ok: false });
+    setResults(out);
+    out.filter(row => row.ok).forEach(onNew);
+  };
+  const csvTemplate = () => saveBlob(
+    new Blob(["url,alias,tags,folder\nhttps://example.com/a-very-long-page,my-sale,promo;spring,Campaigns\n"], { type: "text/csv" }),
+    "links-template.csv");
   const copyOne = async (i) => { await navigator.clipboard.writeText(results[i].short); setCopiedIdx(i); setTimeout(() => setCopiedIdx(null), 1800); };
   const copyAll = () => navigator.clipboard.writeText(results.filter(r => r.ok).map(r => `${r.original} → ${r.short}`).join("\n"));
   const csv = () => {
@@ -288,6 +315,7 @@ function Bulk({ onNew, token }) {
   return (
     <div className="card tilt3d">
       <div className="cardLabel" style={{ color: "#b78bfa" }}>Bulk URLs <span className="cardTag">up to 20</span></div>
+      {!token && <GuestQuota quota={quota} onSignIn={onSignIn} />}
       <div className="taWrap">
         <textarea id="bulk-url-textarea" value={text} onChange={e => { setText(e.target.value); setErr(""); }}
           placeholder={"One URL per line or comma-separated:\nhttps://example.com/very/long/url\nhttps://another.site/path?q=123"} rows={5} />
@@ -296,12 +324,17 @@ function Bulk({ onNew, token }) {
           <button className="ghostBtn" onClick={() => { setText(""); setResults([]); setErr(""); }} disabled={!text && !results.length}>Clear</button>
         </div>
       </div>
+      {token && <p className="hint">Or upload a CSV with the columns <b>url, alias, tags, folder</b> (up to 100 rows). <button type="button" className="linkBtn" onClick={csvTemplate}>Download a template</button></p>}
       {err && <div className="errBox" role="alert">⚠ {err}</div>}
       {loading && <div className="progWrap"><div className="progBar"><div className="progFill" style={{ width: prog + "%" }} /></div><span className="progLbl">{prog}%</span></div>}
       <div className="bulkBtns">
-        <button className="btn btnPrimary" onClick={submit} disabled={loading || !text.trim()} id="bulk-shorten-btn">
+        <button className="btn btnPrimary" onClick={submit} disabled={loading || !text.trim() || outOfFreeLinks} id="bulk-shorten-btn">
           {loading ? <><span className="spin" /> Processing…</> : <><span>Shorten All</span><span className="arr">↗</span></>}
         </button>
+        {token && <>
+          <button className="btn btnGhost" onClick={() => fileRef.current?.click()} disabled={loading} id="bulk-csv-upload">Upload CSV ⤒</button>
+          <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={importCsv} hidden aria-label="Upload a CSV file of URLs" />
+        </>}
         {results.length > 0 && <><button className="btn btnGhost" onClick={copyAll} id="bulk-copy-all-btn">Copy All</button><button className="btn btnGhost" onClick={csv} id="bulk-export-btn">Export CSV ⤓</button></>}
       </div>
       {results.length > 0 && (
@@ -696,7 +729,7 @@ export default function App() {
     try { localStorage.setItem("ls_theme", next); } catch { /* storage unavailable */ }
   };
   const [shortRedirectCode] = useState(() => new URLSearchParams(window.location.search).get("r") || "");
-  const [redirectError, setRedirectError] = useState("");
+  const [guestQuota, setGuestQuota] = useState(null);
   const [tab, setTab] = useState("single");
   const [history, setHistory] = useState(getHistory);
   const [token, setToken] = useState(() => localStorage.getItem("ls_token") || "");
@@ -746,21 +779,12 @@ export default function App() {
   }, []);
   const clearHistory = () => { setHistory([]); localStorage.removeItem("ls_history"); };
   useEffect(() => {
-    if (!shortRedirectCode) return undefined;
+    // Guests get a limited number of free links; ask the server how many are left.
+    if (token || shortRedirectCode) return undefined;
     let cancelled = false;
-    const resolveShortUrl = async () => {
-      try {
-        const response = await fetch(`${API}/resolve/${encodeURIComponent(shortRedirectCode)}`);
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "Short URL not found.");
-        if (!cancelled) window.location.replace(data.original_url);
-      } catch (error) {
-        if (!cancelled) setRedirectError(error.message || "Unable to open this short link.");
-      }
-    };
-    resolveShortUrl();
+    apiRequest("/guest-quota").then(result => { if (!cancelled && result.ok) setGuestQuota(result.data); });
     return () => { cancelled = true; };
-  }, [shortRedirectCode]);
+  }, [token, shortRedirectCode]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     // Drop one-time email-link parameters so a refresh doesn't reopen the dialog.
@@ -894,13 +918,9 @@ export default function App() {
     }
   };
 
-  if (shortRedirectCode) {
-    return (
-      <main role={redirectError ? "alert" : "status"} style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24, color: "#cde0f5", background: "#04080f", fontFamily: "Inter, sans-serif" }}>
-        {redirectError || "Opening your link…"}
-      </main>
-    );
-  }
+  const openAuth = (mode = "login") => { setAuthNotice(""); setAuthMode(mode); setAuthOpen(true); };
+
+  if (shortRedirectCode) return <RedirectPage code={shortRedirectCode} />;
 
   return (
     <>
@@ -1676,6 +1696,7 @@ export default function App() {
         html[data-theme="light"] .trafficTrack { border-bottom-color: #e3eaf3; background: linear-gradient(180deg,transparent,#edf3fb); }
         html[data-theme="light"] .tabs { background: rgba(255,255,255,.8); border-color: #e0e8f2; }
         html[data-theme="light"] .tab { color: #657894; }
+        html[data-theme="light"] .tab.on { color: #fff; }
         html[data-theme="light"] .tab:hover:not(.on) { color: #27466f; background: #edf3fb; }
         html[data-theme="light"] .card { background: rgba(255,255,255,.94); border-color: #e0e8f2; box-shadow: 0 18px 48px rgba(29,54,91,.13); }
         html[data-theme="light"] .tilt3d.isTilted { box-shadow: 0 28px 54px rgba(34,71,125,.22), 0 0 0 1px rgba(55,125,230,.16); }
@@ -1885,7 +1906,7 @@ export default function App() {
           <a href="#history">History</a>
           {user
             ? <><span className="navUser" title={user.email}>{user.email}</span><button className="navAuth" onClick={signOut}>Sign out</button></>
-            : <button className="navAuth" onClick={() => { setAuthNotice(""); setAuthMode("login"); setAuthOpen(true); }}>Sign in</button>}
+            : <button className="navAuth" onClick={() => openAuth("login")}>Sign in</button>}
           <button className="navTheme" type="button" onClick={toggleTheme} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-pressed={theme === "light"}>
             {theme === "dark" ? "☀" : "☾"}<span className="navThemeLabel">{theme === "dark" ? "Light" : "Dark"}</span>
           </button>
@@ -1954,10 +1975,14 @@ export default function App() {
           </div>
 
           {/* ── Shortener ── */}
-          {tab === "single" ? <Single onNew={addToHistory} token={token} /> : <Bulk onNew={addToHistory} token={token} />}
+          {tab === "single"
+            ? <Single onNew={addToHistory} token={token} quota={guestQuota} onQuota={setGuestQuota} onSignIn={openAuth} />
+            : <Bulk onNew={addToHistory} token={token} quota={guestQuota} onQuota={setGuestQuota} onSignIn={openAuth} />}
 
           {/* ── History ── */}
-          <History key={token} history={history} onClear={clearHistory} canClear={!user} token={token} />
+          {token
+            ? <MyLinks token={token} refreshKey={statsVersion} onChanged={() => setStatsVersion(version => version + 1)} />
+            : <History key={token} history={history} onClear={clearHistory} canClear={!user} token={token} />}
 
           {/* ── Features ── */}
           <section className="feats" id="features">

@@ -15,6 +15,7 @@ export default defineConfig({
       '/stats': backend,
       '/my-links': backend,
       '/resolve': backend,
+      '/guest-quota': backend,
     },
   },
 })
