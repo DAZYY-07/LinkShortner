@@ -512,11 +512,20 @@ LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 SECOND_LEVEL_SUFFIXES = {"co", "com", "org", "net", "gov", "edu", "ac"}
+# Well-known short domains are named after the site they belong to (youtu.be -> youtube).
+KNOWN_SHORT_DOMAINS = {
+    "youtu.be": "youtube", "fb.me": "facebook", "fb.com": "facebook", "t.co": "twitter", "amzn.to": "amazon",
+    "amzn.com": "amazon", "goo.gl": "google", "lnkd.in": "linkedin", "wa.me": "whatsapp", "git.io": "github",
+    "redd.it": "reddit", "ig.me": "instagram", "spoti.fi": "spotify",
+}
 
 
 def site_slug(url: str) -> str:
     """A readable name for the destination's website, used only to make links look like /youtube/abc123."""
     host = (urlparse(url).hostname or "").lower().rstrip(".")
+    for short_domain, site in KNOWN_SHORT_DOMAINS.items():
+        if host == short_domain or host.endswith("." + short_domain):
+            return site
     labels = [label for label in host.split(".") if label]
     if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in SECOND_LEVEL_SUFFIXES:
         name = labels[-3]  # bbc.co.uk -> bbc

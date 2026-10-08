@@ -253,13 +253,15 @@ def test_flagged_check_fails_open_when_the_service_is_down(monkeypatch):
 def test_site_slug_names():
     expected = {
         "https://www.youtube.com/watch?v=abc": "youtube",
-        "https://youtu.be/abc": "youtu",
+        "https://youtu.be/IQxPEiu3RRQ?si=ZHS3uiMJrr9eGK56": "youtube",
+        "https://www.youtu.be/abc": "youtube",
+        "https://fb.me/page": "facebook",
+        "https://t.co/x": "twitter",
         "https://m.facebook.com/page": "facebook",
         "https://docs.python.org/3/": "python",
         "https://www.bbc.co.uk/news": "bbc",
         "https://github.com/DAZYY-07/LinkShortner": "github",
         "https://resolve.io/pricing": "link",      # would clash with the API's /resolve route
-        "https://t.co/x": "t",
     }
     for url, slug in expected.items():
         assert main.site_slug(url) == slug, url
