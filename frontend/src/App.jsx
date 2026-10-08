@@ -307,6 +307,8 @@ function Bulk({ onNew, token }) {
 /* ─── History ─────────────────────────────────────────────── */
 function History({ history, onClear, canClear, token }) {
   const [ci, setCi] = useState(null);
+  // Accounts can have up to 100 links; show them in pages so the page doesn't grow endlessly.
+  const [visibleCount, setVisibleCount] = useState(10);
   const [analyticsCode, setAnalyticsCode] = useState("");
   const [analyticsByCode, setAnalyticsByCode] = useState({});
   const [analyticsLoading, setAnalyticsLoading] = useState("");
@@ -348,7 +350,7 @@ function History({ history, onClear, canClear, token }) {
       {history.length > 0 && !token && <p className="analyticsMessage">Sign in to view click analytics for links in your account.</p>}
       {history.length === 0
         ? <p className="histEmpty">Your shortened links will appear here.</p>
-        : history.map((h, i) => (
+        : history.slice(0, visibleCount).map((h, i) => (
           <div className="histEntry" key={h.code || h.short || i}>
             <div className="histRow">
               <div className="histLeft"><div className="histDomain">Redirects to {domainOf(h.original)}</div><div className="histTime">{fmtDate(h.ts)}</div></div>
@@ -386,6 +388,11 @@ function History({ history, onClear, canClear, token }) {
             )}
           </div>
         ))}
+      {history.length > visibleCount && (
+        <button className="btn btnGhost histMore" type="button" onClick={() => setVisibleCount(count => count + 10)}>
+          Show more ({history.length - visibleCount} more)
+        </button>
+      )}
     </section>
   );
 }
@@ -1696,7 +1703,81 @@ export default function App() {
           .navLogo { width: 32px; height: 32px; font-size: 16px; }
           .navLinks { gap: 6px; }
           .navAuth { padding: 7px 9px; font-size: 12px; }
-          .navTheme { min-height: 36px; padding: 0 7px; font-size: 10px; }
+          .navTheme { min-height: 36px; padding: 0 7px; font-size: 11px; }
+        }
+
+        /* ═══════════════════════════════════════════════
+           LAYOUT FIXES (all widths)
+        ═══════════════════════════════════════════════ */
+        /* Let the campaign panel drop onto its own full-width line instead of overflowing the card. */
+        .inputRow { flex-wrap: wrap; }
+        .inputWrap { flex: 1 1 260px; min-width: 0; }
+        .campaignPanel summary { min-height: 24px; }
+
+        /* Nav: never squash the brand or wrap button labels; shed secondary items as space runs out. */
+        .navLinks { min-width: 0; }
+        .navAuth, .navCta { white-space: nowrap; }
+        @media (min-width: 641px) {
+          /* Phones keep their tighter rules from the 640px block above. */
+          .nav { gap: 16px; }
+          .navBrand { flex-shrink: 0; white-space: nowrap; }
+        }
+        @media (max-width: 1100px) {
+          .navLinks { gap: 16px; }
+          .navUser { display: none; }
+        }
+        @media (max-width: 960px) {
+          .navLinks > a:not(.navCta) { display: none; }
+          .navLinks { gap: 10px; }
+        }
+        /* On phones the URL box is right below the hero, so "Try Now" isn't needed. */
+        @media (max-width: 480px) {
+          .navCta { display: none; }
+        }
+        @media (max-width: 360px) {
+          /* Icon-only theme toggle; the button keeps its aria-label. */
+          .navThemeLabel { display: none; }
+          .navTheme { min-width: 40px; justify-content: center; font-size: 14px; }
+          .navBrand { font-size: 14px; gap: 6px; }
+          .navLogo { width: 30px; height: 30px; flex-basis: 30px; font-size: 15px; }
+        }
+        @media (max-width: 340px) {
+          .navBrand { font-size: 12.5px; gap: 5px; }
+          .navLinks { gap: 5px; }
+        }
+
+        .navThemeLabel { margin-left: 4px; }
+        .histMore { display: flex; width: 100%; justify-content: center; margin-top: 10px; }
+        @media (max-width: 640px) {
+          /* Phone history rows: domain, then the short link, then the buttons side by side. */
+          .histCode { order: 2; }
+          .histRow > .btn { order: 3; flex: 1 1 0; justify-content: center; }
+        }
+
+        /* Readable minimum sizes for small labels. */
+        .sLbl { font-size: 11px; }
+        .analyticsFoot { font-size: 11px; }
+        .analyticsPeriod { font-size: 10px; }
+        .trafficLabel { font-size: 10.5px; }
+
+        /* Touch screens: 44px-tall tap targets. */
+        @media (pointer: coarse) {
+          .tab { min-height: 44px; }
+          .campaignPanel summary { min-height: 44px; }
+          .rbX { width: 44px; height: 44px; }
+          .ghostBtn { min-height: 44px; padding: 0 10px; }
+          .navAuth, .navTheme { min-height: 44px; display: inline-flex; align-items: center; }
+          .authClose { width: 44px; height: 44px; }
+          .authSwitch button, .authForgot { min-height: 44px; padding: 0 8px; }
+        }
+        @media (pointer: coarse) and (min-width: 481px) {
+          .navCta { display: inline-flex; align-items: center; min-height: 44px; }
+        }
+
+        /* Short landscape screens (phones turned sideways): keep the dialog scrollable. */
+        @media (max-height: 520px) {
+          .authBackdrop { align-items: start; overflow-y: auto; padding: 12px; }
+          .authDialog { max-height: calc(100dvh - 24px); overflow-y: auto; }
         }
       `}</style>
 
@@ -1721,7 +1802,7 @@ export default function App() {
             ? <><span className="navUser" title={user.email}>{user.email}</span><button className="navAuth" onClick={signOut}>Sign out</button></>
             : <button className="navAuth" onClick={() => { setAuthNotice(""); setAuthMode("login"); setAuthOpen(true); }}>Sign in</button>}
           <button className="navTheme" type="button" onClick={() => setTheme(current => current === "dark" ? "light" : "dark")} aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} aria-pressed={theme === "light"}>
-            {theme === "dark" ? "☀ Light" : "☾ Dark"}
+            {theme === "dark" ? "☀" : "☾"}<span className="navThemeLabel">{theme === "dark" ? "Light" : "Dark"}</span>
           </button>
           <a href="#single-url-input" className="navCta">Try Now ↗</a>
         </div>
@@ -1804,7 +1885,7 @@ export default function App() {
                 { i: "📱", n: "QR Codes", d: "Every link gets a QR code, ready to scan or download." },
                 { i: "🕐", n: "Synced Link History", d: "Sign in to see links saved to your account across devices." },
                 { i: "🔒", n: "Secure Accounts", d: "Passwords are securely hashed, and sessions can be revoked at sign-out." },
-                { i: "🌐", n: "Always On", d: "Backend hosted on Render — fast global redirects 24/7." },
+                { i: "🐳", n: "Cloud & Docker Ready", d: "Runs on Render with PostgreSQL, or locally as three Docker containers." },
               ].map((f, i) => (
                 <div className="featCard tilt3d" key={i}>
                   <span className="featIco">{f.i}</span>
@@ -1821,7 +1902,7 @@ export default function App() {
             <nav className="footerNav">
               <a href="#features">Features</a>
               <a href="#history">History</a>
-              <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
+              <a href="https://github.com/DAZYY-07/LinkShortner" target="_blank" rel="noopener noreferrer">GitHub</a>
             </nav>
           </footer>
 
