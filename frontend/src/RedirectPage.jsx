@@ -59,7 +59,7 @@ export default function RedirectPage({ code }) {
     }
   };
 
-  const home = window.location.pathname || "/";
+  const home = "/"; // a /site/code address must not link back to itself
 
   if (phase === "loading") {
     return <main className="rpPage"><div className="rpCard" role="status"><span className="rpSpin" aria-hidden="true" /><p>Opening your link…</p></div></main>;

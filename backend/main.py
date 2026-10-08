@@ -77,6 +77,8 @@ SAFE_BROWSING_API_KEY = os.getenv("SAFE_BROWSING_API_KEY", "").strip()
 GEO_LOOKUP_URL = os.getenv("GEO_LOOKUP_URL", "https://api.country.is/{ip}")
 GEO_LOOKUP_DISABLED = os.getenv("GEO_LOOKUP_DISABLED", "").strip() == "1"
 ALLOW_PRIVATE_URLS = os.getenv("ALLOW_PRIVATE_URLS", "").strip() == "1"
+# How short links are written: "/site/code" (path), "/?r=code" (query), or pick automatically (auto).
+SHORT_LINK_STYLE = os.getenv("SHORT_LINK_STYLE", "auto").strip().lower()
 # Google's own Safe Browsing test pages are always blocked; add more with BLOCKED_DOMAINS=a.com,b.com
 BLOCKED_DOMAINS = {
     domain.strip().lower()
@@ -509,7 +511,52 @@ def account_response(user: User, token: str) -> dict:
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
-def short_url_for(request: Request, short_code: str) -> str:
+SECOND_LEVEL_SUFFIXES = {"co", "com", "org", "net", "gov", "edu", "ac"}
+
+
+def site_slug(url: str) -> str:
+    """A readable name for the destination's website, used only to make links look like /youtube/abc123."""
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    labels = [label for label in host.split(".") if label]
+    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in SECOND_LEVEL_SUFFIXES:
+        name = labels[-3]  # bbc.co.uk -> bbc
+    elif len(labels) >= 2:
+        name = labels[-2]  # www.youtube.com -> youtube
+    else:
+        name = labels[0] if labels else ""
+    name = re.sub(r"[^a-z0-9-]", "", name).strip("-")[:24]
+    return name if name and name not in RESERVED_ALIASES else "link"
+
+
+_paths_probe = {"checked": 0.0, "supported": False}
+
+
+def frontend_supports_paths() -> bool:
+    """True when the frontend serves its app for any path, which /site/code links need (cached).
+
+    A static host such as Render's answers 404 for unknown paths until a "rewrite everything to
+    /index.html" rule is added; until then we keep producing /?r=code links so nothing breaks.
+    """
+    now = time.monotonic()
+    if _paths_probe["checked"] and now - _paths_probe["checked"] < (600 if _paths_probe["supported"] else 60):
+        return _paths_probe["supported"]
+    supported = False
+    try:
+        probe = urllib.request.Request(f"{FRONTEND_URL}/_linkshortener_probe/check", headers={"User-Agent": "LinkShortener/2.0"})
+        with urllib.request.urlopen(probe, timeout=2) as response:
+            body = response.read(4096).decode("utf-8", "ignore")
+            supported = (
+                response.status == 200
+                and "text/html" in response.headers.get("content-type", "")
+                and 'id="root"' in body
+            )
+    except Exception:
+        supported = False
+    _paths_probe.update(checked=now, supported=supported)
+    return supported
+
+
+def short_url_for(request: Request, short_code: str, destination: str | None = None) -> str:
     if request.url.hostname in LOCAL_HOSTS:
         # Point local links at the dev frontend: cross-origin calls carry an Origin
         # header, and the Vite dev proxy sends X-Forwarded-Host.
@@ -521,8 +568,12 @@ def short_url_for(request: Request, short_code: str) -> str:
             base_url = f"http://{forwarded_host}"
         else:
             base_url = "http://localhost:5173"
+        use_path = SHORT_LINK_STYLE != "query"  # the Vite dev server and nginx both serve the app for any path
     else:
         base_url = FRONTEND_URL
+        use_path = SHORT_LINK_STYLE == "path" or (SHORT_LINK_STYLE == "auto" and frontend_supports_paths())
+    if use_path and destination:
+        return f"{base_url}/{site_slug(destination)}/{short_code}"
     return f"{base_url}/?{urlencode({'r': short_code})}"
 
 def client_ip(request: Request) -> str:
@@ -760,7 +811,7 @@ def direct_url_for(request: Request, short_code: str) -> str:
 def link_to_dict(request: Request, link: Link, now: datetime | None = None) -> dict:
     return {
         "original_url": link.original_url,
-        "short_url": short_url_for(request, link.short_code),
+        "short_url": short_url_for(request, link.short_code, link.original_url),
         "direct_url": direct_url_for(request, link.short_code),
         "short_code": link.short_code,
         "created_at": iso_utc(link.created_at),
@@ -1833,3 +1884,10 @@ def redirect_to_original(short_code: str, request: Request, background_tasks: Ba
     if failure is not None:
         return failure
     return RedirectResponse(url=target[0], status_code=target[1])
+
+
+@app.get("/{site}/{short_code}", tags=["Redirect"], summary="Follow a short link written as /site/code",
+         dependencies=[Depends(rate_limit("redirect", 120))])
+def redirect_with_site(site: str, short_code: str, request: Request, background_tasks: BackgroundTasks):
+    """The first part is only for readability (for example /youtube/abc123); the code decides where it goes."""
+    return redirect_to_original(short_code, request, background_tasks)

@@ -246,3 +246,70 @@ def test_flagged_check_fails_open_when_the_service_is_down(monkeypatch):
     monkeypatch.setattr(main, "SAFE_BROWSING_API_KEY", "key")
     monkeypatch.setattr(main.urllib.request, "urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("offline")))
     assert main.flagged_by_safe_browsing("https://example.com") is False
+
+
+# ── /site/code link format ─────────────────────────────────
+
+def test_site_slug_names():
+    expected = {
+        "https://www.youtube.com/watch?v=abc": "youtube",
+        "https://youtu.be/abc": "youtu",
+        "https://m.facebook.com/page": "facebook",
+        "https://docs.python.org/3/": "python",
+        "https://www.bbc.co.uk/news": "bbc",
+        "https://github.com/DAZYY-07/LinkShortner": "github",
+        "https://resolve.io/pricing": "link",      # would clash with the API's /resolve route
+        "https://t.co/x": "t",
+    }
+    for url, slug in expected.items():
+        assert main.site_slug(url) == slug, url
+
+
+def test_path_style_links_carry_the_site_name(client, user, monkeypatch):
+    monkeypatch.setattr(main, "SHORT_LINK_STYLE", "path")
+    created = shorten(client, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", user["headers"]).json()
+    assert created["short_url"] == f"http://frontend.test/youtube/{created['short_code']}"
+    listed = client.get("/my-links", headers=user["headers"]).json()
+    assert listed[0]["short_url"] == created["short_url"]  # existing links get the new look too
+    alias = shorten(client, "https://www.bbc.co.uk/news", user["headers"], alias="top-news").json()
+    assert alias["short_url"] == "http://frontend.test/bbc/top-news"
+
+
+def test_query_style_still_available(client, guest, monkeypatch):
+    monkeypatch.setattr(main, "SHORT_LINK_STYLE", "query")
+    body = shorten(client, "https://www.youtube.com/watch?v=abc", guest).json()
+    assert body["short_url"] == f"http://frontend.test/?r={body['short_code']}"
+
+
+def test_backend_follows_site_code_paths(client, user):
+    code = shorten(client, "https://example.com/pathy", user["headers"]).json()["short_code"]
+    for prefix in ("example", "youtube", "anything"):  # the first part is decoration only
+        response = client.get(f"/{prefix}/{code}", follow_redirects=False)
+        assert response.status_code == 302 and response.headers["location"] == "https://example.com/pathy"
+    assert client.get("/example/does-not-exist", follow_redirects=False).status_code == 404
+    # real two-part routes are not swallowed by the catch-all
+    assert client.get("/docs/oauth2-redirect").status_code == 200
+    assert client.get("/auth/me").status_code == 401
+
+
+def test_auto_style_follows_what_the_frontend_can_serve(client, guest, monkeypatch):
+    monkeypatch.setattr(main, "SHORT_LINK_STYLE", "auto")
+
+    class Page:
+        status = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        def read(self, size=-1): return b'<html><body><div id="root"></div></body></html>'
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+
+    main._paths_probe.update(checked=0.0, supported=False)
+    monkeypatch.setattr(main.urllib.request, "urlopen", lambda *args, **kwargs: Page())
+    assert shorten(client, "https://www.youtube.com/watch?v=a", guest).json()["short_url"].startswith("http://frontend.test/youtube/")
+
+    # a host that answers 404 for unknown paths (a static site without the rewrite rule) keeps the old format
+    def not_found(*args, **kwargs):
+        raise main.urllib.error.HTTPError("http://frontend.test", 404, "Not Found", {}, None)
+    main._paths_probe.update(checked=0.0, supported=False)
+    monkeypatch.setattr(main.urllib.request, "urlopen", not_found)
+    assert "/?r=" in shorten(client, "https://www.youtube.com/watch?v=b", guest).json()["short_url"]
+    main._paths_probe.update(checked=0.0, supported=False)

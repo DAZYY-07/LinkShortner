@@ -13,6 +13,7 @@ os.environ.update({
     # Set TEST_DATABASE_URL to run the same tests against PostgreSQL.
     "DATABASE_URL": os.environ.get("TEST_DATABASE_URL") or f"sqlite:///{_database.as_posix()}",
     "RATE_LIMIT_DISABLED": "1",
+    "SHORT_LINK_STYLE": "query",  # tests switch to path style where they need it; no network probes
     "GEO_LOOKUP_DISABLED": "1",
     "FRONTEND_URL": "http://frontend.test",
     "BACKEND_URL": "http://backend.test",

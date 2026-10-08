@@ -34,6 +34,12 @@ export function errorMessage(result, fallback = "Something went wrong. Please tr
   return typeof detail === "string" && detail ? detail : fallback;
 }
 
+/** Short links are /site/code (or the older /?r=code); read the code out of the address bar path. */
+export function codeFromPath(pathname) {
+  const match = pathname.match(/^\/([a-z0-9-]{1,40})\/([A-Za-z0-9-]{3,30})\/?$/i);
+  return match ? match[2] : "";
+}
+
 export function domainOf(url) {
   try { return new URL(url).hostname.replace("www.", ""); } catch { return url; }
 }

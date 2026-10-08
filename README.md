@@ -41,8 +41,8 @@ A full-stack URL shortener: shorten single or bulk URLs, generate QR codes, and 
 
 1. The frontend sends `POST /shorten` with the long URL.
 2. The backend validates it, checks it isn't dangerous, enforces the limits (5 free links per guest network, 5 copies of one URL), generates a random 6-character code with `secrets.choice` (or uses the alias you chose), and stores it in the `links` table. A unique index on `short_code` plus a retry handles collisions.
-3. Short links look like `https://<frontend>/?r=<code>`. Opening one makes the frontend call `GET /resolve/<code>`. The backend atomically counts the click (only while the link is active, unexpired and under its click limit) and returns the destination; the click's details (referrer, device, browser, OS, country) are logged **after** the response, in the background, so they never slow the redirect.
-4. The backend also redirects directly: `GET /<code>` answers with an HTTP **302** (or 301, per link). In local Docker tests this takes a median of about 10 ms.
+3. Short links look like `https://<frontend>/youtube/4ee97l`: the first part is just the destination's site name, to make the link recognisable, and the code after it decides where it goes. Older `/?r=<code>` links keep working. Opening one makes the frontend call `GET /resolve/<code>`. The backend atomically counts the click (only while the link is active, unexpired and under its click limit) and returns the destination; the click's details (referrer, device, browser, OS, country) are logged **after** the response, in the background, so they never slow the redirect.
+4. The backend also redirects directly: `GET /<code>` or `GET /<site>/<code>` answers with an HTTP **302** (or 301, per link). In local Docker tests this takes a median of about 10 ms.
 
 Guests are told apart by a hash of their network address; the address itself is never stored, and neither is the visitor's IP in click events, only the country derived from it.
 
@@ -130,6 +130,10 @@ npm run dev
 
 The Vite dev server proxies API calls to `http://127.0.0.1:8088` (override with `BACKEND_PROXY_TARGET`). Without `DATABASE_URL` the backend uses SQLite (`backend/links.db`). For local email links, set `BACKEND_URL=http://localhost:8088` and `FRONTEND_URL=http://localhost:5173` in `backend/.env`.
 
+## Deploying the frontend on Render
+
+`/youtube/4ee97l`-style links need the static site to serve the app for any path. In the Render dashboard open the static site, go to **Redirects/Rewrites** and add a rule: source `/*`, destination `/index.html`, action **Rewrite**. Until that rule exists the backend detects it (`SHORT_LINK_STYLE=auto`) and keeps producing `/?r=code` links, so nothing breaks; once it exists the new links appear automatically. The Docker setup (nginx) and the Vite dev server already do this.
+
 ## Tests
 
 ```bash
@@ -150,6 +154,7 @@ The suite covers the guest limit, aliases, redirects, expiry and click limits, p
 | `SAFE_BROWSING_API_KEY` | Enables Google Safe Browsing checks | off |
 | `BLOCKED_DOMAINS` | Extra comma-separated domains to refuse | none |
 | `GEO_LOOKUP_URL` / `GEO_LOOKUP_DISABLED` | Country lookup service (`{ip}` placeholder) / turn it off | api.country.is / on |
+| `SHORT_LINK_STYLE` | `path` (`/youtube/abc123`), `query` (`/?r=abc123`) or `auto` | `auto` |
 | `RATE_LIMIT_DISABLED` | Set to `1` to switch rate limiting off (tests) | off |
 | `GMAIL_SCRIPT_URL`, `GMAIL_SCRIPT_SECRET`, `EMAIL_FROM` | Email sending | dev mode: links printed in the log |
 

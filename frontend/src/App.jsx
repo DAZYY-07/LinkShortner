@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { API, apiRequest, downloadQr, errorMessage, qrUrl, requestHeaders, saveBlob } from "./api.js";
+import { API, apiRequest, codeFromPath, downloadQr, errorMessage, qrUrl, requestHeaders, saveBlob } from "./api.js";
 import GuestQuota from "./GuestQuota.jsx";
 import LinkOptionsFields from "./LinkOptions.jsx";
 import { EMPTY_OPTIONS, optionsToPayload } from "./linkOptions.js";
@@ -728,7 +728,7 @@ export default function App() {
     setTheme(next);
     try { localStorage.setItem("ls_theme", next); } catch { /* storage unavailable */ }
   };
-  const [shortRedirectCode] = useState(() => new URLSearchParams(window.location.search).get("r") || "");
+  const [shortRedirectCode] = useState(() => new URLSearchParams(window.location.search).get("r") || codeFromPath(window.location.pathname));
   const [guestQuota, setGuestQuota] = useState(null);
   const [tab, setTab] = useState("single");
   const [history, setHistory] = useState(getHistory);
