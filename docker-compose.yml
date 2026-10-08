@@ -36,6 +36,9 @@ services:
       GMAIL_SCRIPT_URL: ${GMAIL_SCRIPT_URL:-}
       GMAIL_SCRIPT_SECRET: ${GMAIL_SCRIPT_SECRET:-}
       EMAIL_FROM: ${EMAIL_FROM:-}
+      # Free links per guest network, and an optional Google Safe Browsing API key.
+      GUEST_LINK_LIMIT: ${GUEST_LINK_LIMIT:-5}
+      SAFE_BROWSING_API_KEY: ${SAFE_BROWSING_API_KEY:-}
     ports:
       - "${BACKEND_PORT:-8001}:8000"
     depends_on:
