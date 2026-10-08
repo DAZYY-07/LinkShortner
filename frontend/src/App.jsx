@@ -152,7 +152,7 @@ function HeroCard() {
             <div className="hcBar" style={{ width: "50%", animationDelay: ".25s" }} />
             <div className="hcBar" style={{ width: "65%", animationDelay: ".5s" }} />
           </div>
-          <div className="hcTag">AI · POWERED</div>
+          <div className="hcTag">SHORT · SHARE</div>
           <div className="hcArrow">↗</div>
         </div>
         <div className="hcBlob b1" />
@@ -1736,7 +1736,7 @@ export default function App() {
             <div className="heroLeft">
               <div className="pill">
                 <div className="pillDot" />
-                AI-Powered · Free · Account optional
+                Free · Click analytics · Account optional
               </div>
               <h1 className="heroH1">
                 <span
